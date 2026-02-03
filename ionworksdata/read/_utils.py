@@ -47,8 +47,8 @@ def suppress_excel_dtype_warnings():
 
 
 def is_maccor_text_extension(ext: str) -> bool:
-    """Check if extension is .txt or .+3digits (e.g., .123)"""
-    return ext == ".txt" or (len(ext) == 4 and ext[1:].isdigit())
+    """Check if extension is .txt or .+3-4 digits (e.g., .123, .0011)"""
+    return ext == ".txt" or (len(ext) in (4, 5) and ext[1:].isdigit())
 
 
 def read_excel_and_get_column_names(
