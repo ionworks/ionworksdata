@@ -45,7 +45,7 @@ Given a processed time series data, the step summary data can be extracted as fo
 
 .. code-block:: python
 
-    steps = iwdata.label.Steps.get_step_types_for(data)
+    steps = iwdata.steps.summarize(data)
 
 This function identifies distinct steps within battery cycling data by detecting changes in the "Step count" column (which must be present in the input data). For each identified step, it extracts and calculates relevant metrics (voltage, current, capacity, energy, etc.) and determines the step type.
 
@@ -73,15 +73,15 @@ Alternatively, the time series and step data can be extracted together using the
 Labeling steps
 --------------
 
-Steps can be labeled using the classes in the ``label`` module. For example, the following code labels the steps as cycling and pulse (charge and discharge).
+Steps can be labeled using the functions in the ``steps`` module. For example, the following code labels the steps as cycling and pulse (charge and discharge).
 
 .. code-block:: python
 
     options = {"cell_metadata": {"Nominal cell capacity [A.h]": 5}}
-    steps = iwdata.label.Cycling.steps(steps, options=options)
+    steps = iwdata.steps.label_cycling(steps, options)
     for direction in ["charge", "discharge"]:
         options["current direction"] = direction
-        steps = iwdata.label.Pulse.steps(steps, options=options)
+        steps = iwdata.steps.label_pulse(steps, options)
 
 Measurement details
 -------------------
