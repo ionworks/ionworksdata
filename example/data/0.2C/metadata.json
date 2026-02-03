@@ -1,0 +1,7 @@
+{
+  "experiment": "constant current",
+  "components": "full",
+  "direction": "discharge",
+  "C-rate": 0.2,
+  "validated": true
+}

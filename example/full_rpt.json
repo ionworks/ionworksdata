@@ -1,0 +1,7 @@
+{
+  "file_type": "csv",
+  "data_path": "example/data/full_rpt/data.csv",
+  "save_path": "output/full_rpt",
+  "bucket": "None",
+  "cycle_column": "Cycle"
+}

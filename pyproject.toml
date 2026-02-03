@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ionworksdata"
+description = "Data processing for Ionworks software."
+requires-python = ">=3.10"
+dynamic = ["version"]
+license = { file = "LICENSE.md" }
+readme = { file = "README.md", content-type = "text/markdown" }
+dependencies = [
+    "pybamm",
+    "iwutil>=0.3.10",
+    "polars-lts-cpu>=0.20.0",
+    "pandas<3.0.0",
+    "numpy",
+    "matplotlib",
+    "scipy",
+    "fastexcel",
+    "ionworks-api>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pydata-sphinx-theme",
+    "sphinx-design",
+    "myst-nb",
+    "openpyxl",
+]
+
+[tool.hatch]
+version.source = "vcs"
+build.hooks.vcs.version-file = "ionworksdata/_version.py"
+build.targets.sdist.include = ["ionworksdata"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ionworksdata"]
+
+[tool.coverage.run]
+source = ["ionworksdata"]

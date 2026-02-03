@@ -1,0 +1,30 @@
+private
+.idea
+*.egg-info
+__pycache__
+.vscode
+.DS_Store
+.venv
+build
+_version.py
+_build
+.coverage
+
+# Working directories for testing and development
+workspace
+configs
+output
+
+# Large test data files
+tests/test_data/repower2.csv
+
+# Figures
+*.png
+*.pdf
+*.jpg
+*.eps
+figures/
+
+# Local development/testing scripts
+.local/
+.mypy_cache/
