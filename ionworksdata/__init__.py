@@ -1,5 +1,12 @@
 from . import steps, transform, util, read, cycle_metrics
-from .load import DataLoader, OCPDataLoader
+from .load import (
+    DataLoader,
+    OCPDataLoader,
+    set_cache_enabled,
+    set_cache_directory,
+    get_cache_directory,
+    clear_cache,
+)
 from .piecewise_linear_timeseries import PiecewiseLinearTimeseries
 from .logger import logger, set_logging_level, get_new_logger
 from .settings import get_settings, update_settings, reset_settings
