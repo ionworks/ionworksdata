@@ -98,6 +98,7 @@ class Novonix(BaseReader):
             "Current (A)": pl.Float64,
             "Run Time (h)": pl.Float64,
             "Temperature (°C)": pl.Float64,
+            "Date and Time": pl.String,
         }
 
         # Read data table with Polars
@@ -106,6 +107,7 @@ class Novonix(BaseReader):
             skip_rows=header_idx,
             truncate_ragged_lines=True,
             schema_overrides=schema_overrides,
+            infer_schema_length=10000,
         )
 
         # Standard renamings
