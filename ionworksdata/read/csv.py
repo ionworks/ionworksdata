@@ -20,6 +20,8 @@ VOLTAGE_COLUMNS = [
             "Ecell/V",
             "Potential[V]",
             "Potential(V)",
+            "voltage__V",
+            "h_potential__V",
         ],
         "scale": 1,
         "shift": 0,
@@ -33,7 +35,14 @@ VOLTAGE_COLUMNS = [
 
 CURRENT_COLUMNS = [
     {
-        "values": ["Current[A]", "Current(A)", "I/A", "<I>/A"],
+        "values": [
+            "Current[A]",
+            "Current(A)",
+            "I/A",
+            "<I>/A",
+            "current__A",
+            "h_current__A",
+        ],
         "scale": 1,
         "shift": 0,
     },
@@ -53,7 +62,15 @@ AREAL_CURRENT_COLUMNS = [
 
 TIME_COLUMNS = [
     {
-        "values": ["Time[s]", "Time(s)", "t_s", "time/s", "TestTime(s)"],
+        "values": [
+            "Time[s]",
+            "Time(s)",
+            "t_s",
+            "time/s",
+            "TestTime(s)",
+            "time__s",
+            "h_test_time__s",
+        ],
         "scale": 1,
         "shift": 0,
     },
@@ -74,6 +91,8 @@ TEMPERATURE_COLUMNS = [
             "T_C",
             "[Neware_xls]T10",
             "[Neware_xls]T490",
+            "temperature__C",
+            "h_temperature__°C",
         ],
         "scale": 1,
         "shift": 0,
