@@ -143,16 +143,33 @@ class Biologic(BaseReader):
         options = iwutil.check_and_combine_options(self.default_options, options)
         skiprows, sep = self._get_file_args(filename, options)
 
+        # Read headers first to determine which columns exist
+        # This is necessary because polars 1.x mishandles schema_overrides
+        # for non-existent columns
+        header_df = pl.read_csv(
+            filename,
+            encoding=options["file_encoding"],
+            separator=sep,
+            skip_rows=skiprows,
+            n_rows=0,
+            truncate_ragged_lines=True,
+        )
+        existing_columns = set(header_df.columns)
+
         # Force numeric columns to be read as Float64 to avoid type inference issues
         # where initial integer-like values (e.g., "0") cause the column to be read
         # as Int64, truncating subsequent decimal values
-        schema_overrides = {
+        # Only include columns that actually exist in the file
+        all_schema_overrides = {
             "Ecell/V": pl.Float64,
             "Ewe/V": pl.Float64,
             "<Ewe>/V": pl.Float64,
             "I/mA": pl.Float64,
             "<I>/mA": pl.Float64,
             "time/s": pl.Float64,
+        }
+        schema_overrides = {
+            k: v for k, v in all_schema_overrides.items() if k in existing_columns
         }
 
         # Load data and rename columns
@@ -162,6 +179,7 @@ class Biologic(BaseReader):
             separator=sep,
             skip_rows=skiprows,
             schema_overrides=schema_overrides,
+            truncate_ragged_lines=True,
         )
 
         column_renamings = self._get_column_renamings()
@@ -218,6 +236,7 @@ class Biologic(BaseReader):
             encoding=options["file_encoding"],
             separator=sep,
             skip_rows=skiprows,
+            truncate_ragged_lines=True,
         )
         try:
             start_datetime = datetime.strptime(data["Date"][0], "%Y-%m-%d %H:%M:%S")

@@ -25,6 +25,9 @@ tests/test_data/repower2.csv
 *.eps
 figures/
 
+# Allow docs icons
+!docs/source/_static/*.png
+
 # Local development/testing scripts
 .local/
 .mypy_cache/
