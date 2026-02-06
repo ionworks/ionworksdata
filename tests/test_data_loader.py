@@ -1319,3 +1319,556 @@ def test_ocp_data_loader_to_config_includes_preprocessing_options():
     assert config["options"]["capacity_column"] == "Discharge capacity [A.h]"
     assert config["options"]["sort"] is True
     assert config["options"]["remove_duplicates"] is True
+
+
+# =============================================================================
+# Cache functionality tests
+# =============================================================================
+
+
+def test_cache_enabled_disabled():
+    """Test cache enable/disable functionality."""
+    from ionworksdata.load import _CACHE_CONFIG
+
+    original_enabled = _CACHE_CONFIG["enabled"]
+
+    try:
+        # Default should be enabled
+        assert _CACHE_CONFIG["enabled"] is True
+
+        # Disable cache
+        iwdata.set_cache_enabled(False)
+        assert _CACHE_CONFIG["enabled"] is False
+
+        # Re-enable cache
+        iwdata.set_cache_enabled(True)
+        assert _CACHE_CONFIG["enabled"] is True
+    finally:
+        _CACHE_CONFIG["enabled"] = original_enabled
+
+
+def test_cache_directory_configuration():
+    """Test cache directory configuration functions."""
+    from ionworksdata.load import _CACHE_CONFIG
+
+    original_dir = _CACHE_CONFIG["directory"]
+
+    try:
+        # Get default directory
+        default_dir = iwdata.get_cache_directory()
+        assert default_dir == Path.home() / ".ionworksdata_cache"
+
+        # Set custom directory
+        custom_dir = Path("/tmp/custom_cache_dir")
+        iwdata.set_cache_directory(custom_dir)
+        assert iwdata.get_cache_directory() == custom_dir
+
+        # Set directory as string
+        iwdata.set_cache_directory("/tmp/another_cache_dir")
+        assert iwdata.get_cache_directory() == Path("/tmp/another_cache_dir")
+    finally:
+        _CACHE_CONFIG["directory"] = original_dir
+
+
+def test_cache_ttl_configuration():
+    """Test cache TTL configuration functions."""
+    # Store original TTL to restore after test
+    original_ttl = iwdata.get_cache_ttl()
+
+    try:
+        # Default TTL should be 1 hour (3600 seconds)
+        assert iwdata.get_cache_ttl() == 3600
+
+        # Set custom TTL
+        iwdata.set_cache_ttl(7200)
+        assert iwdata.get_cache_ttl() == 7200
+
+        # Set TTL to None (disable expiration)
+        iwdata.set_cache_ttl(None)
+        assert iwdata.get_cache_ttl() is None
+
+        # Set back to a value
+        iwdata.set_cache_ttl(1800)
+        assert iwdata.get_cache_ttl() == 1800
+    finally:
+        # Restore original TTL
+        iwdata.set_cache_ttl(original_ttl)
+
+
+def test_cache_ttl_expiration():
+    """Test that cache expires based on TTL."""
+    import tempfile
+    import time
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _get_cache_path,
+        _load_from_cache,
+        _save_to_cache,
+    )
+
+    # Use a temporary directory for cache
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 1  # 1 second TTL for testing
+
+            test_data = {"time_series": {"a": [1, 2, 3]}, "steps": {"b": [4, 5, 6]}}
+            measurement_id = "test-ttl-measurement"
+
+            # Save to cache
+            _save_to_cache(measurement_id, test_data)
+
+            # Should load immediately
+            cached = _load_from_cache(measurement_id)
+            assert cached is not None
+            assert cached["time_series"] == test_data["time_series"]
+
+            # Wait for TTL to expire
+            time.sleep(1.5)
+
+            # Should return None after expiration
+            cached_expired = _load_from_cache(measurement_id)
+            assert cached_expired is None
+
+            # Cache file should be deleted
+            cache_path = _get_cache_path(measurement_id)
+            assert not cache_path.exists()
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_ttl_disabled():
+    """Test that cache never expires when TTL is None."""
+    import tempfile
+    import time
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _load_from_cache,
+        _save_to_cache,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = None  # Disable TTL
+
+            test_data = {"time_series": {"a": [1, 2, 3]}}
+            measurement_id = "test-no-ttl-measurement"
+
+            # Save to cache
+            _save_to_cache(measurement_id, test_data)
+
+            # Wait a bit
+            time.sleep(0.1)
+
+            # Should still load (no expiration)
+            cached = _load_from_cache(measurement_id)
+            assert cached is not None
+            assert cached["time_series"] == test_data["time_series"]
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_save_and_load():
+    """Test basic cache save and load functionality."""
+    import tempfile
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _get_cache_path,
+        _load_from_cache,
+        _save_to_cache,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600  # 1 hour
+
+            # Test data
+            test_data = {
+                "time_series": pd.DataFrame(
+                    {"Time [s]": [0, 1, 2], "Voltage [V]": [3.5, 3.6, 3.7]}
+                ),
+                "steps": pd.DataFrame({"Start index": [0], "End index": [2]}),
+            }
+            measurement_id = "test-save-load-123"
+
+            # Initially no cache
+            assert _load_from_cache(measurement_id) is None
+
+            # Save to cache
+            _save_to_cache(measurement_id, test_data)
+
+            # Cache file should exist
+            cache_path = _get_cache_path(measurement_id)
+            assert cache_path.exists()
+
+            # Load from cache
+            cached = _load_from_cache(measurement_id)
+            assert cached is not None
+            pd.testing.assert_frame_equal(
+                cached["time_series"], test_data["time_series"]
+            )
+            pd.testing.assert_frame_equal(cached["steps"], test_data["steps"])
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_clear():
+    """Test cache clear functionality."""
+    import tempfile
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _load_from_cache,
+        _save_to_cache,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            # Save multiple cache entries
+            for i in range(3):
+                _save_to_cache(f"test-clear-{i}", {"data": i})
+
+            # Verify all are cached
+            for i in range(3):
+                assert _load_from_cache(f"test-clear-{i}") is not None
+
+            # Clear cache
+            count = iwdata.clear_cache()
+            assert count == 3
+
+            # Verify all are cleared
+            for i in range(3):
+                assert _load_from_cache(f"test-clear-{i}") is None
+
+            # Clearing empty cache returns 0
+            assert iwdata.clear_cache() == 0
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_clear_nonexistent_directory():
+    """Test cache clear on nonexistent directory returns 0."""
+    from ionworksdata.load import _CACHE_CONFIG
+
+    original_dir = _CACHE_CONFIG["directory"]
+
+    try:
+        # Set to a non-existent directory
+        _CACHE_CONFIG["directory"] = Path("/nonexistent/path/that/does/not/exist")
+        assert iwdata.clear_cache() == 0
+    finally:
+        _CACHE_CONFIG["directory"] = original_dir
+
+
+def test_cache_disabled_no_save():
+    """Test that cache is not saved when disabled."""
+    import tempfile
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _get_cache_path,
+        _load_from_cache,
+        _save_to_cache,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_enabled = _CACHE_CONFIG["enabled"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["enabled"] = False
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            test_data = {"data": "test"}
+            measurement_id = "test-disabled-cache"
+
+            # Try to save (should do nothing)
+            _save_to_cache(measurement_id, test_data)
+
+            # Cache file should not exist
+            cache_path = _get_cache_path(measurement_id)
+            assert not cache_path.exists()
+
+            # Load should return None
+            assert _load_from_cache(measurement_id) is None
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["enabled"] = original_enabled
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_corrupted_file_deleted():
+    """Test that corrupted cache files are deleted on load."""
+    import tempfile
+
+    from ionworksdata.load import (
+        _CACHE_CONFIG,
+        _get_cache_path,
+        _load_from_cache,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            measurement_id = "test-corrupted-cache"
+            cache_path = _get_cache_path(measurement_id)
+
+            # Create cache directory
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write corrupted data to cache file
+            with open(cache_path, "wb") as f:
+                f.write(b"not a valid pickle file")
+
+            assert cache_path.exists()
+
+            # Try to load - should return None and delete corrupted file
+            cached = _load_from_cache(measurement_id)
+            assert cached is None
+            assert not cache_path.exists()
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_cache_path_special_characters():
+    """Test that cache path handles special characters in measurement IDs."""
+    from ionworksdata.load import _get_cache_path
+
+    # Test with special characters
+    test_ids = [
+        "simple-id",
+        "id/with/slashes",
+        "id with spaces",
+        "id:with:colons",
+        "id@with@at",
+        "id#with#hash",
+        "very_long_id_" + "x" * 100,
+    ]
+
+    for measurement_id in test_ids:
+        cache_path = _get_cache_path(measurement_id)
+        # Should be a valid path
+        assert cache_path is not None
+        # Should end with .pkl
+        assert cache_path.suffix == ".pkl"
+        # Filename should only contain safe characters
+        filename = cache_path.name
+        assert "/" not in filename
+
+
+def test_dataloader_from_db_uses_cache():
+    """Test that DataLoader.from_db uses cache correctly."""
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    from ionworksdata.load import _CACHE_CONFIG, _load_from_cache
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2, 3],
+            "Voltage [V]": [3.8, 3.7, 3.6, 3.5],
+            "Current [A]": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Start index": [0],
+            "End index": [3],
+            "Start voltage [V]": [3.8],
+        }
+    )
+
+    mock_measurement_detail = MagicMock()
+    mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = steps
+
+    mock_client = MagicMock()
+    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            measurement_id = "test-cache-dataloader"
+
+            with patch("ionworks.Ionworks", return_value=mock_client):
+                # First call should hit the API
+                loader1 = iwdata.DataLoader.from_db(measurement_id)
+                assert mock_client.cell_measurement.detail.call_count == 1
+
+            # Data should now be cached
+            cached = _load_from_cache(measurement_id)
+            assert cached is not None
+
+            with patch("ionworks.Ionworks", return_value=mock_client):
+                # Second call should use cache (API not called again)
+                mock_client.cell_measurement.detail.reset_mock()
+                loader2 = iwdata.DataLoader.from_db(measurement_id)
+                assert mock_client.cell_measurement.detail.call_count == 0
+
+            # Both loaders should have same data
+            pd.testing.assert_frame_equal(
+                loader1.data.reset_index(drop=True),
+                loader2.data.reset_index(drop=True),
+            )
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_dataloader_from_db_use_cache_false():
+    """Test that DataLoader.from_db bypasses cache when use_cache=False."""
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    from ionworksdata.load import _CACHE_CONFIG, _save_to_cache
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2, 3],
+            "Voltage [V]": [3.8, 3.7, 3.6, 3.5],
+            "Current [A]": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Start index": [0],
+            "End index": [3],
+            "Start voltage [V]": [3.8],
+        }
+    )
+
+    mock_measurement_detail = MagicMock()
+    mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = steps
+
+    mock_client = MagicMock()
+    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            measurement_id = "test-bypass-cache"
+
+            # Pre-populate cache with different data
+            old_data = {
+                "time_series": pd.DataFrame({"Time [s]": [99]}),
+                "steps": pd.DataFrame({"Start index": [99]}),
+            }
+            _save_to_cache(measurement_id, old_data)
+
+            with patch("ionworks.Ionworks", return_value=mock_client):
+                # Call with use_cache=False should bypass cache and hit API
+                loader = iwdata.DataLoader.from_db(measurement_id, use_cache=False)
+                assert mock_client.cell_measurement.detail.call_count == 1
+
+            # Should have fresh data, not cached data
+            assert loader.data["Time [s]"].iloc[0] == 0  # Not 99
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl
+
+
+def test_ocp_dataloader_from_db_uses_cache():
+    """Test that OCPDataLoader.from_db uses cache correctly."""
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    from ionworksdata.load import _CACHE_CONFIG, _load_from_cache
+
+    time_series = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.5, 1.0, 1.5],
+            "Voltage [V]": [4.2, 3.9, 3.7, 3.5],
+        }
+    )
+
+    mock_measurement_detail = MagicMock()
+    mock_measurement_detail.time_series = time_series
+
+    mock_client = MagicMock()
+    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_dir = _CACHE_CONFIG["directory"]
+        original_ttl = _CACHE_CONFIG["ttl_seconds"]
+
+        try:
+            _CACHE_CONFIG["directory"] = Path(tmpdir)
+            _CACHE_CONFIG["ttl_seconds"] = 3600
+
+            measurement_id = "test-cache-ocp-dataloader"
+
+            with patch("ionworks.Ionworks", return_value=mock_client):
+                # First call should hit the API
+                loader1 = iwdata.OCPDataLoader.from_db(measurement_id)
+                assert mock_client.cell_measurement.detail.call_count == 1
+
+            # Data should now be cached
+            cached = _load_from_cache(measurement_id)
+            assert cached is not None
+
+            with patch("ionworks.Ionworks", return_value=mock_client):
+                # Second call should use cache (API not called again)
+                mock_client.cell_measurement.detail.reset_mock()
+                loader2 = iwdata.OCPDataLoader.from_db(measurement_id)
+                assert mock_client.cell_measurement.detail.call_count == 0
+
+            # Both loaders should have same data
+            pd.testing.assert_frame_equal(
+                loader1.data.reset_index(drop=True),
+                loader2.data.reset_index(drop=True),
+            )
+
+        finally:
+            _CACHE_CONFIG["directory"] = original_dir
+            _CACHE_CONFIG["ttl_seconds"] = original_ttl

@@ -33,6 +33,7 @@ except AttributeError:
 _CACHE_CONFIG = {
     "enabled": True,
     "directory": Path.home() / ".ionworksdata_cache",
+    "ttl_seconds": 3600,  # 1 hour default TTL
 }
 
 
@@ -49,6 +50,32 @@ def set_cache_directory(directory: str | Path) -> None:
 def get_cache_directory() -> Path:
     """Get the current cache directory."""
     return _CACHE_CONFIG["directory"]
+
+
+def set_cache_ttl(ttl_seconds: int | None) -> None:
+    """
+    Set the cache time-to-live (TTL) in seconds.
+
+    Parameters
+    ----------
+    ttl_seconds : int | None
+        The time in seconds before cached data is considered stale.
+        Set to None to disable TTL (cache never expires).
+        Default is 3600 (1 hour).
+    """
+    _CACHE_CONFIG["ttl_seconds"] = ttl_seconds
+
+
+def get_cache_ttl() -> int | None:
+    """
+    Get the current cache TTL in seconds.
+
+    Returns
+    -------
+    int | None
+        The TTL in seconds, or None if TTL is disabled.
+    """
+    return _CACHE_CONFIG["ttl_seconds"]
 
 
 def clear_cache() -> int:
@@ -81,18 +108,30 @@ def _get_cache_path(measurement_id: str) -> Path:
 
 def _load_from_cache(measurement_id: str) -> dict | None:
     """
-    Load measurement data from cache if available.
+    Load measurement data from cache if available and not expired.
 
     Returns
     -------
     dict | None
-        Cached data dict with 'time_series' and 'steps' keys, or None if not cached.
+        Cached data dict with 'time_series' and 'steps' keys, or None if not cached
+        or if the cache has expired.
     """
+    import time
+
     if not _CACHE_CONFIG["enabled"]:
         return None
 
     cache_path = _get_cache_path(measurement_id)
     if cache_path.exists():
+        # Check if cache has expired based on TTL
+        ttl_seconds = _CACHE_CONFIG["ttl_seconds"]
+        if ttl_seconds is not None:
+            file_age = time.time() - cache_path.stat().st_mtime
+            if file_age > ttl_seconds:
+                # Cache has expired, delete it
+                cache_path.unlink(missing_ok=True)
+                return None
+
         try:
             with open(cache_path, "rb") as f:
                 return pickle.load(f)

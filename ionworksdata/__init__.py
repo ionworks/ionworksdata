@@ -5,6 +5,8 @@ from .load import (
     set_cache_enabled,
     set_cache_directory,
     get_cache_directory,
+    set_cache_ttl,
+    get_cache_ttl,
     clear_cache,
 )
 from .piecewise_linear_timeseries import PiecewiseLinearTimeseries
