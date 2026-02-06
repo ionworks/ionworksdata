@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import pickle
 import warnings
 from pathlib import Path
 
@@ -7,8 +9,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pl
+import pybamm
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks, savgol_filter
+
+from .logger import logger
+from .util import monotonic_time_offset
 
 # Compatibility patch for NumPy 2.0: alias np.trapz to np.trapezoid
 # This fixes PyBaMM which uses np.trapz internally
@@ -20,10 +26,137 @@ except AttributeError:
     except AttributeError:
         pass
 
-import pybamm
 
-from .logger import logger
-from .util import monotonic_time_offset
+# =============================================================================
+# Cache configuration
+# =============================================================================
+_CACHE_CONFIG = {
+    "enabled": True,
+    "directory": Path.home() / ".ionworksdata_cache",
+    "ttl_seconds": 3600,  # 1 hour default TTL
+}
+
+
+def set_cache_enabled(enabled: bool) -> None:
+    """Enable or disable caching for from_db calls."""
+    _CACHE_CONFIG["enabled"] = enabled
+
+
+def set_cache_directory(directory: str | Path) -> None:
+    """Set the cache directory for from_db calls."""
+    _CACHE_CONFIG["directory"] = Path(directory)
+
+
+def get_cache_directory() -> Path:
+    """Get the current cache directory."""
+    return _CACHE_CONFIG["directory"]
+
+
+def set_cache_ttl(ttl_seconds: int | None) -> None:
+    """
+    Set the cache time-to-live (TTL) in seconds.
+
+    Parameters
+    ----------
+    ttl_seconds : int | None
+        The time in seconds before cached data is considered stale.
+        Set to None to disable TTL (cache never expires).
+        Default is 3600 (1 hour).
+    """
+    _CACHE_CONFIG["ttl_seconds"] = ttl_seconds
+
+
+def get_cache_ttl() -> int | None:
+    """
+    Get the current cache TTL in seconds.
+
+    Returns
+    -------
+    int | None
+        The TTL in seconds, or None if TTL is disabled.
+    """
+    return _CACHE_CONFIG["ttl_seconds"]
+
+
+def clear_cache() -> int:
+    """
+    Clear all cached data.
+
+    Returns
+    -------
+    int
+        Number of cache files deleted.
+    """
+    cache_dir = _CACHE_CONFIG["directory"]
+    if not cache_dir.exists():
+        return 0
+
+    count = 0
+    for cache_file in cache_dir.glob("*.pkl"):
+        cache_file.unlink()
+        count += 1
+    return count
+
+
+def _get_cache_path(measurement_id: str) -> Path:
+    """Get the cache file path for a measurement ID."""
+    # Use hash to handle any special characters in measurement_id
+    hash_key = hashlib.md5(measurement_id.encode()).hexdigest()[:16]
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in measurement_id)
+    return _CACHE_CONFIG["directory"] / f"{safe_id}_{hash_key}.pkl"
+
+
+def _load_from_cache(measurement_id: str) -> dict | None:
+    """
+    Load measurement data from cache if available and not expired.
+
+    Returns
+    -------
+    dict | None
+        Cached data dict with 'time_series' and 'steps' keys, or None if not cached
+        or if the cache has expired.
+    """
+    import time
+
+    if not _CACHE_CONFIG["enabled"]:
+        return None
+
+    cache_path = _get_cache_path(measurement_id)
+    if cache_path.exists():
+        # Check if cache has expired based on TTL
+        ttl_seconds = _CACHE_CONFIG["ttl_seconds"]
+        if ttl_seconds is not None:
+            file_age = time.time() - cache_path.stat().st_mtime
+            if file_age > ttl_seconds:
+                # Cache has expired, delete it
+                cache_path.unlink(missing_ok=True)
+                return None
+
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            # If cache is corrupted, delete it
+            cache_path.unlink(missing_ok=True)
+            return None
+    return None
+
+
+def _save_to_cache(measurement_id: str, data: dict) -> None:
+    """Save measurement data to cache."""
+    if not _CACHE_CONFIG["enabled"]:
+        return
+
+    cache_dir = _CACHE_CONFIG["directory"]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_path = _get_cache_path(measurement_id)
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(data, f)
+    except Exception:
+        # Silently fail if we can't write cache
+        pass
 
 
 def first_step_from_cycle(cycle: int) -> str:
@@ -685,6 +818,7 @@ class OCPDataLoader(GenericDataLoader):
         cls,
         measurement_id: str,
         options: dict | None = None,
+        use_cache: bool = True,
     ) -> OCPDataLoader:
         """
         Load OCP data from the Ionworks database.
@@ -695,19 +829,35 @@ class OCPDataLoader(GenericDataLoader):
             The ID of the measurement to load from the database.
         options : dict | None, optional
             Options to pass to the OCPDataLoader constructor.
+        use_cache : bool, optional
+            If True (default), use local file cache to avoid repeated API calls.
+            Set to False to force a fresh load from the database.
 
         Returns
         -------
         OCPDataLoader
             An OCPDataLoader instance with the loaded data.
         """
-        from ionworks import Ionworks
+        # Try loading from cache first
+        cached_data = None
+        if use_cache:
+            cached_data = _load_from_cache(measurement_id)
 
-        client = Ionworks()
-        measurement_detail = client.cell_measurement.detail(measurement_id)
+        if cached_data is not None:
+            time_series = cached_data.get("time_series")
+        else:
+            from ionworks import Ionworks
+
+            client = Ionworks()
+            measurement_detail = client.cell_measurement.detail(measurement_id)
+            time_series = measurement_detail.time_series
+
+            # Save to cache for future use
+            if use_cache:
+                _save_to_cache(measurement_id, {"time_series": time_series})
 
         options = options or {}
-        instance = cls(measurement_detail.time_series, **options)
+        instance = cls(time_series, **options)
 
         # Store measurement_id for reverse parsing
         instance._measurement_id = measurement_id  # noqa: SLF001
@@ -1252,6 +1402,7 @@ class DataLoader(GenericDataLoader):
         cls,
         measurement_id: str,
         options: dict | None = None,
+        use_cache: bool = True,
     ) -> DataLoader:
         """
         Load data from the Ionworks database.
@@ -1262,21 +1413,41 @@ class DataLoader(GenericDataLoader):
             The ID of the measurement to load from the database.
         options : dict | None, optional
             Options to pass to the DataLoader constructor.
+        use_cache : bool, optional
+            If True (default), use local file cache to avoid repeated API calls.
+            Set to False to force a fresh load from the database.
 
         Returns
         -------
         DataLoader
             A DataLoader instance with the loaded data.
         """
-        from ionworks import Ionworks
+        # Try loading from cache first
+        cached_data = None
+        if use_cache:
+            cached_data = _load_from_cache(measurement_id)
 
-        client = Ionworks()
-        measurement_detail = client.cell_measurement.detail(measurement_id)
+        if cached_data is not None:
+            time_series = cached_data.get("time_series")
+            steps = cached_data.get("steps")
+        else:
+            from ionworks import Ionworks
+
+            client = Ionworks()
+            measurement_detail = client.cell_measurement.detail(measurement_id)
+            time_series = measurement_detail.time_series
+            steps = measurement_detail.steps
+
+            # Save to cache for future use
+            if use_cache:
+                _save_to_cache(
+                    measurement_id, {"time_series": time_series, "steps": steps}
+                )
 
         options = options or {}
         instance = cls(
-            measurement_detail.time_series,
-            measurement_detail.steps,
+            time_series,
+            steps,
             **options,
         )
 
