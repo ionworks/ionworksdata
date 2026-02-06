@@ -88,7 +88,7 @@ class Maccor(BaseReader):
             - "Test Time (Hr)" -> "Time [h]"
             - "Cycle", "Cyc#", "Cycle ID", "Cycle P" -> "Cycle from cycler"
             - "Step", "Step ID" -> "Step from cycler"
-            - "LogTemp001", "Temperature (°C)" -> "Temperature [degC]"
+            - "LogTemp001", "Temperature (°C)", "EVTemp (C)" -> "Temperature [degC]"
             - "Status", "State", "MD" -> "Status"
             - "Capacity (Ah)", "Capacity (AHr)", "Cap. (Ah)" -> "Capacity [A.h]"
             - "Energy (Wh)", "Energy (WHr)" -> "Energy [W.h]"
@@ -455,6 +455,7 @@ class Maccor(BaseReader):
             "Step ID": "Step from cycler",
             "LogTemp001": "Temperature [degC]",
             "Temperature (°C)": "Temperature [degC]",
+            "EVTemp (C)": "Temperature [degC]",
             "Status": "Status",
             "State": "Status",
             "MD": "Status",
