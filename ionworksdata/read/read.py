@@ -11,6 +11,10 @@ import polars as pl
 import ionworksdata as iwdata
 from ionworksdata.logger import logger
 from ionworksdata.read.detect import detect_reader
+from ionworksdata.validation import (
+    MeasurementValidationError,
+    validate_measurement_data,
+)
 
 
 def _validate_argument_order(
@@ -377,7 +381,7 @@ def time_series_and_steps(
     reader: str | None = None,
     extra_column_mappings: dict[str, str] | None = None,
     extra_constant_columns: dict[str, float] | None = None,
-    options: dict[str, str] | None = None,
+    options: dict[str, Any] | None = None,
     save_dir: str | Path | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
@@ -385,6 +389,10 @@ def time_series_and_steps(
     and then label the steps. The steps dataframe is created using :func:`ionworksdata.steps.summarize`.
     The steps output always includes a "Cycle count" column (defaults to 0 if no cycle information is available)
     and a "Cycle from cycler" column (only if provided in the input data).
+
+    When validation is enabled, runs the same validation as the Ionworks API so that
+    data which passes here will pass API validation on upload. Control via the
+    ``options`` dict: ``validate`` (default True) and ``validate_strict`` (default True).
 
     Parameters
     ----------
@@ -400,8 +408,10 @@ def time_series_and_steps(
         A dictionary of extra constant columns. The keys are the column names and the values
         are the constant values to assign.
     options : dict, optional
-        A dictionary of options to pass to the reader. See the reader's documentation
-        for the available options.
+        Options for the reader and for validation. Reader-specific keys are passed through
+        to the reader. Additionally:
+        - ``validate``: bool, if True validate data before returning (default: True).
+        - ``validate_strict``: bool, if True use strict validation (default: True).
     save_dir : str or Path, optional
         The directory to save the time series and steps data to. If not provided, the data will
         not be saved.
@@ -413,16 +423,28 @@ def time_series_and_steps(
         :func:`ionworksdata.read.time_series` for details.
     steps : pl.DataFrame
         The step summary data containing step types, cycle numbers, and other metadata.
+
+    Raises
+    ------
+    MeasurementValidationError
+        If validation is enabled and the data fails API-matching validation.
     """
     # Validate argument order
     _validate_argument_order(filename, reader, "time_series_and_steps")
+
+    opts = options or {}
+    reader_options = {
+        k: v for k, v in opts.items() if k not in ("validate", "validate_strict")
+    }
+    should_validate = opts.get("validate", True)
+    validate_strict = opts.get("validate_strict", True)
 
     data = time_series(
         filename,
         reader,
         extra_column_mappings,
         extra_constant_columns,
-        options,
+        reader_options,
         save_dir,
     )
 
@@ -436,6 +458,27 @@ def time_series_and_steps(
     steps = iwdata.steps.summarize(data)
     if not isinstance(steps, pl.DataFrame):
         steps = pl.from_pandas(steps)
+
+    if should_validate:
+        try:
+            validate_measurement_data(data, strict=validate_strict)
+        except MeasurementValidationError as e:
+            # Check if it's a current sign convention error - if so, auto-fix
+            if "Current sign convention error" in str(e):
+                logger.info("Detected wrong current sign convention, auto-fixing...")
+                # Flip current sign
+                data = data.with_columns((-pl.col("Current [A]")).alias("Current [A]"))
+                # Recalculate capacity and energy with correct sign
+                data = iwdata.transform.set_capacity(data, options=reader_options)
+                data = iwdata.transform.set_energy(data, options=reader_options)
+                # Regenerate steps with fixed data
+                steps = iwdata.steps.summarize(data)
+                if not isinstance(steps, pl.DataFrame):
+                    steps = pl.from_pandas(steps)
+                # Re-validate
+                validate_measurement_data(data, strict=validate_strict)
+            else:
+                raise
 
     if save_dir:
         save_path = Path(save_dir) if isinstance(save_dir, str) else save_dir

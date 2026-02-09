@@ -8,6 +8,7 @@ from typing import Any
 
 import fastexcel
 import iwutil
+import numpy as np
 import polars as pl
 import pytz
 
@@ -28,6 +29,7 @@ class Maccor(BaseReader):
         "timezone": "UTC",
         "cell_metadata": {},
         "time_offset_fix": -1,  # Minimum time difference to enforce. -1 means raise error on non-increasing time
+        "skip_capacity_columns": False,  # If True, skip capacity/energy columns and compute from current/power
     }
 
     @staticmethod
@@ -130,6 +132,11 @@ class Maccor(BaseReader):
                 If >= 0, ensures all time differences are at least this value using
                 vectorized operations: fixed_diff = max(diff(time), time_offset_fix),
                 then reconstructs time via cumsum.
+            - skip_capacity_columns: bool, optional
+                If True, skip reading capacity and energy columns from the raw file.
+                This forces ionworksdata to compute capacity/energy from current/power
+                integration instead. Useful when raw capacity data has resets or
+                other issues. Default is False.
 
         Returns
         -------
@@ -204,7 +211,7 @@ class Maccor(BaseReader):
                 data = pl.read_csv(StringIO(content), encoding="utf8", **read_kwargs)
 
         # Get standard column renamings and process Test Time column
-        column_renamings = self._get_column_renamings()
+        column_renamings = self._get_column_renamings(options)
         data, column_renamings = self._process_test_time_column(data, column_renamings)
 
         column_renamings.update(extra_column_mappings or {})
@@ -241,6 +248,9 @@ class Maccor(BaseReader):
 
         # Fix unsigned current if needed
         data = self._fix_unsigned_current(data)
+
+        # Fix current sign convention if needed (positive current should be discharge)
+        data = self._fix_current_sign_convention(data)
 
         # Validate and optionally fix time to be strictly increasing
         # Do this BEFORE standard_data_processing to avoid losing duplicate timestamps
@@ -426,17 +436,77 @@ class Maccor(BaseReader):
 
         return data
 
+    def _fix_current_sign_convention(self, data: pl.DataFrame) -> pl.DataFrame:
+        """
+        Fix current sign convention if needed.
+
+        Ionworks expects positive current for discharge and negative for charge.
+        Some equipment records it the opposite way (positive current = charge).
+        This function detects this by correlating current with voltage changes
+        and flips the sign if needed.
+
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Input dataframe with "Current [A]" and "Voltage [V]" columns.
+
+        Returns
+        -------
+        pl.DataFrame
+            Dataframe with current sign corrected if convention was wrong.
+        """
+        if "Current [A]" not in data.columns or "Voltage [V]" not in data.columns:
+            return data
+
+        # Ensure numeric
+        data = self._coerce_numeric(data, "Current [A]")
+        data = self._coerce_numeric(data, "Voltage [V]")
+
+        current = data["Current [A]"].to_numpy()
+        voltage = data["Voltage [V]"].to_numpy()
+
+        # Find points with significant current (above 10% of max)
+        current_threshold = np.abs(current).max() * 0.1
+        significant_mask = np.abs(current) > current_threshold
+
+        if not np.any(significant_mask):
+            return data
+
+        # Calculate voltage change direction at significant current points
+        voltage_diff = np.diff(voltage)
+        current_at_diff = current[:-1][significant_mask[:-1]]
+        voltage_diff_at_current = voltage_diff[significant_mask[:-1]]
+
+        if len(current_at_diff) < 2:
+            return data
+
+        # Positive current should correlate with voltage DECREASE (discharge)
+        # If positive current correlates with voltage INCREASE, the sign is wrong
+        correlation = np.corrcoef(current_at_diff, voltage_diff_at_current)[0, 1]
+
+        if correlation > 0.1:  # Positive correlation = wrong sign convention
+            data = data.with_columns((-pl.col("Current [A]")).alias("Current [A]"))
+
+        return data
+
     @staticmethod
-    def _get_column_renamings() -> dict[str, str]:
+    def _get_column_renamings(options: dict[str, Any] | None = None) -> dict[str, str]:
         """
         Get standard column renaming mappings for Maccor files.
+
+        Parameters
+        ----------
+        options : dict, optional
+            Options dict. If options["skip_capacity_columns"] is True,
+            capacity and energy column mappings are excluded, forcing
+            ionworksdata to compute them from current/power integration.
 
         Returns
         -------
         dict[str, str]
             Dictionary mapping original column names to standardized names.
         """
-        return {
+        renamings = {
             "Voltage": "Voltage [V]",
             "Volts": "Voltage [V]",
             "Voltage (V)": "Voltage [V]",
@@ -459,21 +529,30 @@ class Maccor(BaseReader):
             "Status": "Status",
             "State": "Status",
             "MD": "Status",
-            "Capacity (Ah)": "Capacity [A.h]",
-            "Capacity (AHr)": "Capacity [A.h]",
-            "Cap. (Ah)": "Capacity [A.h]",
-            "Energy (Wh)": "Energy [W.h]",
-            "Energy (WHr)": "Energy [W.h]",
-            "Chg Capacity (Ah)": "Charge capacity [A.h]",
-            "Chg Capacity (AHr)": "Charge capacity [A.h]",
-            "DChg Capacity (Ah)": "Discharge capacity [A.h]",
-            "DChg Capacity (AHr)": "Discharge capacity [A.h]",
-            "Chg Energy (Wh)": "Charge energy [W.h]",
-            "Chg Energy (WHr)": "Charge energy [W.h]",
-            "DChg Energy (Wh)": "Discharge energy [W.h]",
-            "DChg Energy (WHr)": "Discharge energy [W.h]",
             "DPT": "Timestamp",
         }
+
+        # Only include capacity/energy columns if not skipping
+        if not (options and options.get("skip_capacity_columns", False)):
+            renamings.update(
+                {
+                    "Capacity (Ah)": "Capacity [A.h]",
+                    "Capacity (AHr)": "Capacity [A.h]",
+                    "Cap. (Ah)": "Capacity [A.h]",
+                    "Energy (Wh)": "Energy [W.h]",
+                    "Energy (WHr)": "Energy [W.h]",
+                    "Chg Capacity (Ah)": "Charge capacity [A.h]",
+                    "Chg Capacity (AHr)": "Charge capacity [A.h]",
+                    "DChg Capacity (Ah)": "Discharge capacity [A.h]",
+                    "DChg Capacity (AHr)": "Discharge capacity [A.h]",
+                    "Chg Energy (Wh)": "Charge energy [W.h]",
+                    "Chg Energy (WHr)": "Charge energy [W.h]",
+                    "DChg Energy (Wh)": "Discharge energy [W.h]",
+                    "DChg Energy (WHr)": "Discharge energy [W.h]",
+                }
+            )
+
+        return renamings
 
     @staticmethod
     def _parse_excel_duration(duration_str: str) -> float | None:
