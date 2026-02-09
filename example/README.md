@@ -31,7 +31,7 @@ Once data has been generated, plot the full RPT data with automatic step
 labeling:
 
 ```bash
-python example/plot_full_rpt.py
+python example/process_and_plot_data.py
 ```
 
 This script demonstrates:
