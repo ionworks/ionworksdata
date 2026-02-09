@@ -28,6 +28,9 @@ figures/
 # Allow docs icons
 !docs/source/_static/*.png
 
+# Example generated data
+example/data/
+
 # Local development/testing scripts
 .local/
 .mypy_cache/
