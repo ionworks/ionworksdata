@@ -1,26 +1,35 @@
-# Ionworks data
+# Ionworks Data Processing
 
-Package to extract, transform, and validate battery data for use in Ionworks software.
+A library for processing experimental battery data into a common format for use in Ionworks software.
 
-## Package overview
+## Overview
 
-`ionworksdata` is organized into the following modules:
+**Ionworks Data Processing** (`ionworksdata`) provides readers for cycler file formats (Maccor, Biologic, Neware, Novonix, Repower, CSV, and more), transforms time series data into a standardized format, and summarizes and labels steps for analysis or use in other Ionworks tools (e.g. the [Ionworks pipeline](https://pipeline.docs.ionworks.com/) and [ionworks-schema](https://github.com/ionworks/ionworks-schema)).
 
-- Read: read raw data from files
-- Transform: transform time series data into Ionworks-compatible format
-- Steps: label steps for easy processing or visualization
+Full API and usage details are in the [Ionworks Data Processing documentation](https://data.docs.ionworks.com/).
 
-## Data format
+## Package structure
 
-The data is processed to be compatible with the Ionworks software. Documentation for the data format can be found in the [Knowledge base](https://www.notion.so/ionworks/Ionworks-Data-Data-management-tools-1ce7637d96ae801da6a1eb0e81669cac?pvs=4).
+- **`read`** — Read raw data from files: `time_series`, `time_series_and_steps`, `measurement_details`; readers include `biologic`, `biologic_mpt`, `maccor`, `neware`, `novonix`, `repower`, `csv`, and others (reader is auto-detected when not specified).
+- **`transform`** — Transform time series into Ionworks-compatible form (step count, cycle count, capacity, energy, etc.).
+- **`steps`** — Summarize time series into step-level data and label steps (cycling, pulse, EIS) for processing or visualization.
+- **`load`** — Load processed data for use in other Ionworks software (`DataLoader`, `OCPDataLoader`).
 
-# Data processing
+## Installation
 
-## Processing time series data
+```bash
+pip install ionworksdata
+```
 
-Time series data can be extracted from a cycler file using the `read.time_series` function, which takes the filename and optionally the reader name (e.g. `csv`, `biologic_mpt`, `maccor`, `neware`, `repower`). If the reader is not specified, it will be automatically detected from the file. The function returns a Polars DataFrame.
+## Quick start
+
+### Processing time series data
+
+Extract time series data from a cycler file with `read.time_series`. The reader can be specified explicitly or auto-detected. The function returns a Polars DataFrame.
 
 ```python
+import ionworksdata as iwdata
+
 # With explicit reader
 data = iwdata.read.time_series("path/to/file.mpt", "biologic_mpt")
 
@@ -28,86 +37,81 @@ data = iwdata.read.time_series("path/to/file.mpt", "biologic_mpt")
 data = iwdata.read.time_series("path/to/file.mpt")
 ```
 
-The function automatically performs several processing steps and adds columns to the output:
+The function automatically performs several processing steps and adds columns to the output.
 
-### Data Processing Steps
+#### Data processing steps
 
 1. **Reader-specific processing** (varies by reader):
-
-   - Column renaming to standardized names (e.g., "Voltage" → "Voltage [V]")
+   - Column renaming to standardized names (e.g. "Voltage" → "Voltage [V]")
    - Numeric coercion (removing thousands separators, converting strings to numbers)
    - Dropping message/error rows (for some readers)
    - Parsing timestamp columns and computing time if needed
-   - Converting time units (e.g., hours to seconds)
+   - Converting time units (e.g. hours to seconds)
    - Fixing unsigned current (if current is always positive, negate during charge)
    - Validating and fixing decreasing times (if `time_offset_fix` option is set)
 
 2. **Standard data processing** (applied to all readers):
-
    - Removing rows with null values in current or voltage columns
    - Converting numeric columns to float64
    - Resetting time to start at zero
-   - Offsetting duplicate timestamps by a small amount (1e-6 seconds) to preserve all data points
+   - Offsetting duplicate timestamps by a small amount (1e-6 s) to preserve all data points
    - Setting discharge current to be positive (charge current remains negative)
 
 3. **Post-processing**:
-   - Adding `Step count`: Cumulative step count (always present)
-   - Adding `Discharge capacity [A.h]`: Discharge capacity in ampere-hours (always present)
-   - Adding `Charge capacity [A.h]`: Charge capacity in ampere-hours (always present)
-   - Adding `Discharge energy [W.h]`: Discharge energy in watt-hours (always present)
-   - Adding `Charge energy [W.h]`: Charge energy in watt-hours (always present)
+   - Adding `Step count`, `Cycle count`, `Discharge capacity [A.h]`, `Charge capacity [A.h]`, `Discharge energy [W.h]`, `Charge energy [W.h]`
 
-### Output Columns
+#### Output columns
 
-The output always includes:
+| Column | Description |
+|--------|-------------|
+| `Time [s]` | Time in seconds |
+| `Current [A]` | Current in amperes |
+| `Voltage [V]` | Voltage in volts |
+| `Step count` | Cumulative step count (always present) |
+| `Cycle count` | Cumulative cycle count, defaults to 0 if no cycle information (always present) |
+| `Discharge capacity [A.h]` | Discharge capacity in ampere-hours (always present) |
+| `Charge capacity [A.h]` | Charge capacity in ampere-hours (always present) |
+| `Discharge energy [W.h]` | Discharge energy in watt-hours (always present) |
+| `Charge energy [W.h]` | Charge energy in watt-hours (always present) |
+| `Step from cycler` | Step number from cycler file (if provided) |
+| `Cycle from cycler` | Cycle number from cycler file (if provided) |
+| `Temperature [degC]` | Temperature in degrees Celsius (if provided) |
+| `Frequency [Hz]` | Frequency in hertz (if provided) |
 
-- `Time [s]`: Time in seconds
-- `Current [A]`: Current in amperes
-- `Voltage [V]`: Voltage in volts
-- `Step count`: Cumulative step count
-- `Discharge capacity [A.h]`: Discharge capacity in ampere-hours
-- `Charge capacity [A.h]`: Charge capacity in ampere-hours
-- `Discharge energy [W.h]`: Discharge energy in watt-hours
-- `Charge energy [W.h]`: Charge energy in watt-hours
-
-Optional columns (if present in source data):
-
-- `Step from cycler`: Step number from cycler file
-- `Cycle from cycler`: Cycle number from cycler file
-- `Temperature [degC]`: Temperature in degrees Celsius
-- `Frequency [Hz]`: Frequency in hertz
-
-For information on the expected and returned columns, see the reader documentation. Additional columns can be added by passing a dictionary to the `extra_column_mappings` argument.
+For expected and returned columns per reader, see the [API documentation](https://data.docs.ionworks.com/). Extra columns can be mapped via `extra_column_mappings`:
 
 ```python
 data = iwdata.read.time_series(
-    "path/to/file.mpt", "biologic_mpt", extra_column_mappings={"My new column": "Old column name"}
+    "path/to/file.mpt", "biologic_mpt",
+    extra_column_mappings={"Old column name": "My new column"},
 )
 ```
 
-## Processing step data
+### Processing step data
 
-Given a processed time series data, the step summary data can be extracted as follows:
+From processed time series, step summary data is obtained with `steps.summarize`:
 
 ```python
 steps = iwdata.steps.summarize(data)
 ```
 
-This function identifies distinct steps within battery cycling data by detecting changes in the "Step count" column (which must be present in the input data). For each identified step, it extracts and calculates relevant metrics (voltage, current, capacity, energy, etc.) and determines the step type.
+This detects steps from the `Step count` column and computes metrics per step. The output always includes:
 
-The output always includes:
+| Column | Description |
+|--------|-------------|
+| `Cycle count` | Cumulative cycle count (defaults to 0 if no cycle information) |
+| `Cycle from cycler` | Cycle number from cycler file (only if provided in input) |
+| `Discharge capacity [A.h]` | Discharge capacity for the step |
+| `Charge capacity [A.h]` | Charge capacity for the step |
+| `Discharge energy [W.h]` | Discharge energy for the step |
+| `Charge energy [W.h]` | Charge energy for the step |
+| `Step from cycler` | Step number from cycler file (only if provided in input) |
 
-- `Cycle count`: Cumulative cycle count (defaults to 0 if no cycle information is available)
-- `Cycle from cycler`: Cycle number from cycler file (only if provided in the input data)
-- `Discharge capacity [A.h]`: Discharge capacity for the step
-- `Charge capacity [A.h]`: Charge capacity for the step
-- `Discharge energy [W.h]`: Discharge energy for the step
-- `Charge energy [W.h]`: Charge energy for the step
-- `Step from cycler`: Step number from cycler file (only if provided in the input data)
+Additional per-step columns include start/end time and index, start/end/min/max/mean/std for voltage and current, duration, step type, and (after labeling) cycle-level capacity and energy. See the [API documentation](https://data.docs.ionworks.com/) for the full list.
 
-**Note:** The `step_column` and `cycle_column` parameters have been removed. The function now always uses "Step count" for step identification and "Cycle from cycler" (if available) for cycle tracking.
+**Note:** Step identification uses `Step count` and, when available, `Cycle from cycler` for cycle tracking.
 
-Alternatively, the time series and step data can be extracted together using the `read.time_series_and_steps` function.
+Alternatively, get time series and steps in one call:
 
 ```python
 # With explicit reader
@@ -117,9 +121,9 @@ data, steps = iwdata.read.time_series_and_steps("path/to/file.mpt", "biologic_mp
 data, steps = iwdata.read.time_series_and_steps("path/to/file.mpt")
 ```
 
-## Labeling steps
+### Labeling steps
 
-Steps can be labeled using the functions in the `steps` module. For example, the following code labels the steps as cycling and pulse (charge and discharge).
+Steps can be labeled using the `steps` module (e.g. cycling, pulse, and EIS):
 
 ```python
 options = {"cell_metadata": {"Nominal cell capacity [A.h]": 5}}
@@ -127,13 +131,15 @@ steps = iwdata.steps.label_cycling(steps, options)
 for direction in ["charge", "discharge"]:
     options["current direction"] = direction
     steps = iwdata.steps.label_pulse(steps, options)
+steps = iwdata.steps.label_eis(steps)
 ```
 
-## Measurement details
+### Measurement details
 
-The function `ionworksdata.read.measurement_details` can be used to return a `measurement_details` dictionary, which has keys "measurement", "time_series", and "steps". You need to first create the measurement dictionary (which contains details about the test, such as its name), and then pass it to the function along with the reader name and filename, and any additional arguments. The function will return the updated measurement details dictionary, which includes information extracted from the file, such as the start time, and the cycler name. This function also automatically labels the steps with some sensible defaults (custom labels can be added by passing a list of dictionaries to the `labels` argument).
+`read.measurement_details` returns a dictionary with `measurement`, `time_series`, and `steps`. Pass the file path, a measurement dict (e.g. test name), and optionally the reader and options; the function fills in time series and steps and updates the measurement dict (e.g. cycler name, start time). Steps are labeled with default labels unless you pass a custom `labels` list:
 
-```python3
+```python
+measurement = {"name": "My test"}
 measurement_details = iwdata.read.measurement_details(
     "path/to/file.mpt",
     measurement,
@@ -144,3 +150,14 @@ measurement = measurement_details["measurement"]
 time_series = measurement_details["time_series"]
 steps = measurement_details["steps"]
 ```
+
+## Data format
+
+Processed data follows the format expected by Ionworks software. Column names, units, and conventions are described in the [Ionworks Data Processing documentation](https://data.docs.ionworks.com/).
+
+## Resources
+
+- [Ionworks Data Processing documentation](https://data.docs.ionworks.com/) — API reference, readers, and data format.
+- [Ionworks Pipeline documentation](https://pipeline.docs.ionworks.com/) — Using processed data in pipelines.
+- [Ionworks documentation](https://docs.ionworks.com) — Platform and product overview.
+
