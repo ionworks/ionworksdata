@@ -250,7 +250,9 @@ class Maccor(BaseReader):
         data = self._fix_unsigned_current(data)
 
         # Fix current sign convention if needed (positive current should be discharge)
-        data = self._fix_current_sign_convention(data)
+        data = iwdata.transform.set_positive_current_for_discharge(
+            data, options=options
+        )
 
         # Validate and optionally fix time to be strictly increasing
         # Do this BEFORE standard_data_processing to avoid losing duplicate timestamps
@@ -369,7 +371,6 @@ class Maccor(BaseReader):
         # Apply offset fix: ensure all negative differences are at least time_offset_fix
         # Only fix decreasing times (negative diff), leave duplicates (zero diff) alone
         # Efficient vectorized approach using numpy
-        import numpy as np
 
         time_values = time_col.to_numpy()
 
@@ -433,59 +434,6 @@ class Maccor(BaseReader):
                 .otherwise(pl.col("Current [A]"))
                 .alias("Current [A]")
             )
-
-        return data
-
-    def _fix_current_sign_convention(self, data: pl.DataFrame) -> pl.DataFrame:
-        """
-        Fix current sign convention if needed.
-
-        Ionworks expects positive current for discharge and negative for charge.
-        Some equipment records it the opposite way (positive current = charge).
-        This function detects this by correlating current with voltage changes
-        and flips the sign if needed.
-
-        Parameters
-        ----------
-        data : pl.DataFrame
-            Input dataframe with "Current [A]" and "Voltage [V]" columns.
-
-        Returns
-        -------
-        pl.DataFrame
-            Dataframe with current sign corrected if convention was wrong.
-        """
-        if "Current [A]" not in data.columns or "Voltage [V]" not in data.columns:
-            return data
-
-        # Ensure numeric
-        data = self._coerce_numeric(data, "Current [A]")
-        data = self._coerce_numeric(data, "Voltage [V]")
-
-        current = data["Current [A]"].to_numpy()
-        voltage = data["Voltage [V]"].to_numpy()
-
-        # Find points with significant current (above 10% of max)
-        current_threshold = np.abs(current).max() * 0.1
-        significant_mask = np.abs(current) > current_threshold
-
-        if not np.any(significant_mask):
-            return data
-
-        # Calculate voltage change direction at significant current points
-        voltage_diff = np.diff(voltage)
-        current_at_diff = current[:-1][significant_mask[:-1]]
-        voltage_diff_at_current = voltage_diff[significant_mask[:-1]]
-
-        if len(current_at_diff) < 2:
-            return data
-
-        # Positive current should correlate with voltage DECREASE (discharge)
-        # If positive current correlates with voltage INCREASE, the sign is wrong
-        correlation = np.corrcoef(current_at_diff, voltage_diff_at_current)[0, 1]
-
-        if correlation > 0.1:  # Positive correlation = wrong sign convention
-            data = data.with_columns((-pl.col("Current [A]")).alias("Current [A]"))
 
         return data
 

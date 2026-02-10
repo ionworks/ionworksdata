@@ -11,7 +11,7 @@ import polars as pl
 import ionworksdata as iwdata
 from ionworksdata.logger import logger
 from ionworksdata.read.detect import detect_reader
-from ionworksdata.validation import (
+from ionworks.validators import (
     MeasurementValidationError,
     validate_measurement_data,
 )
