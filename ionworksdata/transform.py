@@ -71,7 +71,9 @@ def get_cumulative_step_number(
         "group EIS steps": iwutil.OptionSpec(True, [False]),
         "EIS tolerance": iwdata.settings.get_eis_tolerance(),
     }
-    combined_options = iwdata.util.check_and_combine_options(default_options, options)
+    combined_options = iwutil.check_and_combine_options(
+        default_options, options, filter_unknown=True
+    )
     if combined_options["method"] == "status":
         status_values = data.get_column("Status").to_list()
         unique_status = []
@@ -182,7 +184,9 @@ def set_step_count(
         "method": iwutil.OptionSpec("step column", ["step column"]),
         "step column": iwutil.OptionSpec(["Step from cycler"]),
     }
-    options = iwdata.util.check_and_combine_options(default_options, options)
+    options = iwutil.check_and_combine_options(
+        default_options, options, filter_unknown=True
+    )
     # Ensure options use the step column name string
     if options is None:
         options = {"method": "step column", "step column": "Step from cycler"}
@@ -231,7 +235,9 @@ def get_cumulative_cycle_number(
         "method": iwutil.OptionSpec("cycle column", ["cycle column"]),
         "cycle column": iwutil.OptionSpec(["Cycle number"]),
     }
-    combined_options = iwdata.util.check_and_combine_options(default_options, options)
+    combined_options = iwutil.check_and_combine_options(
+        default_options, options, filter_unknown=True
+    )
     if combined_options["method"] == "cycle column":
         cycle_column = combined_options["cycle column"]
         if isinstance(cycle_column, list):

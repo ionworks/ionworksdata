@@ -11,7 +11,7 @@ license = { file = "LICENSE.md" }
 readme = { file = "README.md", content-type = "text/markdown" }
 dependencies = [
     "pybamm",
-    "iwutil>=0.3.10",
+    "iwutil>=0.3.11",
     "polars-lts-cpu>=0.20.0",
     "pandas<3.0.0",
     "numpy",

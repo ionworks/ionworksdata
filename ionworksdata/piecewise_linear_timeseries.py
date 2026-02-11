@@ -5,7 +5,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-from iwutil import check_and_combine_options
+import iwutil
 from matplotlib.widgets import Slider
 
 # Compatibility patch for NumPy 2.0: alias np.trapz to np.trapezoid
@@ -107,7 +107,9 @@ class PiecewiseLinearTimeseries:
             "interactive_preprocessing": False,
             "window_max": _default_window_max(),
         }
-        options = check_and_combine_options(default_options, options)
+        options = iwutil.check_and_combine_options(
+            default_options, options, filter_unknown=True
+        )
         self.options = options
 
         self.t_data = t_data

@@ -10,7 +10,6 @@ import pandas as pd
 import polars as pl
 
 from ionworksdata.logger import logger
-from ionworksdata.util import check_and_combine_options
 
 
 def label_pulse(
@@ -64,7 +63,9 @@ def label_pulse(
             "discharge", ["charge", "delithiation", "lithiation"]
         ),
     }
-    options_validated = check_and_combine_options(default_options, options)
+    options_validated = iwutil.check_and_combine_options(
+        default_options, options, filter_unknown=True
+    )
     assert options_validated is not None
     cell_metadata = options_validated.get("cell_metadata", None)
     if cell_metadata is None:
