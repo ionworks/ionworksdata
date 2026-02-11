@@ -57,7 +57,9 @@ def label_cycling(
         "cell_metadata": "[required]",
         "constant current threshold": 1 / 2,
     }
-    options_validated = iwutil.check_and_combine_options(default_options, options)
+    options_validated = iwutil.check_and_combine_options(
+        default_options, options, filter_unknown=True
+    )
     assert options_validated is not None
     cell_metadata = options_validated.get("cell_metadata", None)
     if cell_metadata is None:

@@ -8,6 +8,7 @@ from typing import Any
 
 import fastexcel
 import iwutil
+import numpy as np
 import polars as pl
 import pytz
 
@@ -28,6 +29,7 @@ class Maccor(BaseReader):
         "timezone": "UTC",
         "cell_metadata": {},
         "time_offset_fix": -1,  # Minimum time difference to enforce. -1 means raise error on non-increasing time
+        "skip_capacity_columns": False,  # If True, skip capacity/energy columns and compute from current/power
     }
 
     @staticmethod
@@ -130,6 +132,11 @@ class Maccor(BaseReader):
                 If >= 0, ensures all time differences are at least this value using
                 vectorized operations: fixed_diff = max(diff(time), time_offset_fix),
                 then reconstructs time via cumsum.
+            - skip_capacity_columns: bool, optional
+                If True, skip reading capacity and energy columns from the raw file.
+                This forces ionworksdata to compute capacity/energy from current/power
+                integration instead. Useful when raw capacity data has resets or
+                other issues. Default is False.
 
         Returns
         -------
@@ -204,7 +211,7 @@ class Maccor(BaseReader):
                 data = pl.read_csv(StringIO(content), encoding="utf8", **read_kwargs)
 
         # Get standard column renamings and process Test Time column
-        column_renamings = self._get_column_renamings()
+        column_renamings = self._get_column_renamings(options)
         data, column_renamings = self._process_test_time_column(data, column_renamings)
 
         column_renamings.update(extra_column_mappings or {})
@@ -241,6 +248,11 @@ class Maccor(BaseReader):
 
         # Fix unsigned current if needed
         data = self._fix_unsigned_current(data)
+
+        # Fix current sign convention if needed (positive current should be discharge)
+        data = iwdata.transform.set_positive_current_for_discharge(
+            data, options=options
+        )
 
         # Validate and optionally fix time to be strictly increasing
         # Do this BEFORE standard_data_processing to avoid losing duplicate timestamps
@@ -359,7 +371,6 @@ class Maccor(BaseReader):
         # Apply offset fix: ensure all negative differences are at least time_offset_fix
         # Only fix decreasing times (negative diff), leave duplicates (zero diff) alone
         # Efficient vectorized approach using numpy
-        import numpy as np
 
         time_values = time_col.to_numpy()
 
@@ -427,16 +438,23 @@ class Maccor(BaseReader):
         return data
 
     @staticmethod
-    def _get_column_renamings() -> dict[str, str]:
+    def _get_column_renamings(options: dict[str, Any] | None = None) -> dict[str, str]:
         """
         Get standard column renaming mappings for Maccor files.
+
+        Parameters
+        ----------
+        options : dict, optional
+            Options dict. If options["skip_capacity_columns"] is True,
+            capacity and energy column mappings are excluded, forcing
+            ionworksdata to compute them from current/power integration.
 
         Returns
         -------
         dict[str, str]
             Dictionary mapping original column names to standardized names.
         """
-        return {
+        renamings = {
             "Voltage": "Voltage [V]",
             "Volts": "Voltage [V]",
             "Voltage (V)": "Voltage [V]",
@@ -459,21 +477,30 @@ class Maccor(BaseReader):
             "Status": "Status",
             "State": "Status",
             "MD": "Status",
-            "Capacity (Ah)": "Capacity [A.h]",
-            "Capacity (AHr)": "Capacity [A.h]",
-            "Cap. (Ah)": "Capacity [A.h]",
-            "Energy (Wh)": "Energy [W.h]",
-            "Energy (WHr)": "Energy [W.h]",
-            "Chg Capacity (Ah)": "Charge capacity [A.h]",
-            "Chg Capacity (AHr)": "Charge capacity [A.h]",
-            "DChg Capacity (Ah)": "Discharge capacity [A.h]",
-            "DChg Capacity (AHr)": "Discharge capacity [A.h]",
-            "Chg Energy (Wh)": "Charge energy [W.h]",
-            "Chg Energy (WHr)": "Charge energy [W.h]",
-            "DChg Energy (Wh)": "Discharge energy [W.h]",
-            "DChg Energy (WHr)": "Discharge energy [W.h]",
             "DPT": "Timestamp",
         }
+
+        # Only include capacity/energy columns if not skipping
+        if not (options and options.get("skip_capacity_columns", False)):
+            renamings.update(
+                {
+                    "Capacity (Ah)": "Capacity [A.h]",
+                    "Capacity (AHr)": "Capacity [A.h]",
+                    "Cap. (Ah)": "Capacity [A.h]",
+                    "Energy (Wh)": "Energy [W.h]",
+                    "Energy (WHr)": "Energy [W.h]",
+                    "Chg Capacity (Ah)": "Charge capacity [A.h]",
+                    "Chg Capacity (AHr)": "Charge capacity [A.h]",
+                    "DChg Capacity (Ah)": "Discharge capacity [A.h]",
+                    "DChg Capacity (AHr)": "Discharge capacity [A.h]",
+                    "Chg Energy (Wh)": "Charge energy [W.h]",
+                    "Chg Energy (WHr)": "Charge energy [W.h]",
+                    "DChg Energy (Wh)": "Discharge energy [W.h]",
+                    "DChg Energy (WHr)": "Discharge energy [W.h]",
+                }
+            )
+
+        return renamings
 
     @staticmethod
     def _parse_excel_duration(duration_str: str) -> float | None:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import numpy as np
 import polars as pl
 import warnings
-from datetime import datetime, timezone, timedelta
-import numpy as np
 
 
 def get_current_and_capacity_units(options: dict | None) -> tuple[str, str]:
