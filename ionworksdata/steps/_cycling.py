@@ -4,12 +4,12 @@ Cycling step labeling.
 
 from __future__ import annotations
 
-import iwutil
 import numpy as np
 import pandas as pd
 import polars as pl
 
 from ionworksdata.logger import logger
+from ionworksdata.util import check_and_combine_options
 
 
 def label_cycling(
@@ -57,7 +57,7 @@ def label_cycling(
         "cell_metadata": "[required]",
         "constant current threshold": 1 / 2,
     }
-    options_validated = iwutil.check_and_combine_options(default_options, options)
+    options_validated = check_and_combine_options(default_options, options)
     assert options_validated is not None
     cell_metadata = options_validated.get("cell_metadata", None)
     if cell_metadata is None:

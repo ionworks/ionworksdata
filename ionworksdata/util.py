@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import numpy as np
 import polars as pl
 import warnings
-from datetime import datetime, timezone, timedelta
-import numpy as np
+
+import iwutil
+
+
+def check_and_combine_options(
+    default_options: dict[str, Any], options: dict[str, Any] | None
+) -> Any:
+    """Combine options with defaults. Only keys in default_options are passed to iwutil;
+    other keys (e.g. for other layers in the pipeline) are ignored.
+    """
+    opts = options or {}
+    filtered = {k: v for k, v in opts.items() if k in default_options}
+    return iwutil.check_and_combine_options(default_options, filtered)
 
 
 def get_current_and_capacity_units(options: dict | None) -> tuple[str, str]:

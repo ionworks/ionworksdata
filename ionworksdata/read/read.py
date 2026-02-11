@@ -392,7 +392,7 @@ def time_series_and_steps(
 
     When validation is enabled, runs the same validation as the Ionworks API so that
     data which passes here will pass API validation on upload. Control via the
-    ``options`` dict: ``validate`` (default True) and ``validate_strict`` (default True).
+    ``options`` dict: ``validate`` (default True) and ``validate_strict`` (default False).
 
     Parameters
     ----------
@@ -411,7 +411,7 @@ def time_series_and_steps(
         Options for the reader and for validation. Reader-specific keys are passed through
         to the reader. Additionally:
         - ``validate``: bool, if True validate data before returning (default: True).
-        - ``validate_strict``: bool, if True use strict validation (default: True).
+        - ``validate_strict``: bool, if True use strict validation (default: False).
     save_dir : str or Path, optional
         The directory to save the time series and steps data to. If not provided, the data will
         not be saved.
@@ -437,7 +437,7 @@ def time_series_and_steps(
         k: v for k, v in opts.items() if k not in ("validate", "validate_strict")
     }
     should_validate = opts.get("validate", True)
-    validate_strict = opts.get("validate_strict", True)
+    validate_strict = opts.get("validate_strict", False)
 
     data = time_series(
         filename,
