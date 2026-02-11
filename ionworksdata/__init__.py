@@ -1,6 +1,7 @@
 from . import steps, transform, util, read, cycle_metrics
 from .load import (
     DataLoader,
+    LazyDataLoader,
     OCPDataLoader,
     set_cache_enabled,
     set_cache_directory,

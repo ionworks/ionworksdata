@@ -1456,6 +1456,45 @@ class DataLoader(GenericDataLoader):
         return instance
 
     @classmethod
+    def lazy_from_db(
+        cls,
+        measurement_id: str,
+        options: dict | None = None,
+        use_cache: bool = True,
+    ) -> LazyDataLoader:
+        """
+        Get a lazy DataLoader that defers data loading until accessed.
+
+        Returns a LazyDataLoader that streams data directly from cloud storage.
+        Filtering is pushed down to the query - only downloads the data you need.
+
+        Parameters
+        ----------
+        measurement_id : str
+            The ID of the measurement to load from the database.
+        options : dict | None, optional
+            Options to pass to the DataLoader (first_step, last_step, filters, etc.)
+        use_cache : bool, optional
+            If True (default), use cached steps metadata if available.
+
+        Returns
+        -------
+        LazyDataLoader
+            A lazy DataLoader that loads data on first access.
+
+        Examples
+        --------
+        >>> # Create lazy loader - no data downloaded yet
+        >>> loader = DataLoader.lazy_from_db(
+        ...     measurement_id,
+        ...     options={"first_step": 2, "last_step": 5},
+        ... )
+        >>> # Data downloaded only when accessed
+        >>> print(loader.data)
+        """
+        return LazyDataLoader(measurement_id, options, use_cache)
+
+    @classmethod
     def from_processed_data(
         cls,
         data: pd.DataFrame | pl.DataFrame,
@@ -1519,3 +1558,171 @@ class DataLoader(GenericDataLoader):
             start_idx=self._start_idx,
             end_idx=self._end_idx,
         )
+
+
+class LazyDataLoader(DataLoader):
+    """
+    A lazy version of DataLoader that defers data loading until accessed.
+
+    Data is streamed directly from cloud storage using Polars LazyFrame.
+    Step filtering is pushed down to the query, so only the needed data
+    is downloaded when `.data` is first accessed.
+
+    Parameters
+    ----------
+    measurement_id : str
+        The ID of the measurement to load from the database.
+    options : dict | None, optional
+        Options to pass to the DataLoader (first_step, last_step, filters, etc.)
+
+    Examples
+    --------
+    >>> loader = LazyDataLoader(measurement_id, {"first_step": 2, "last_step": 5})
+    >>> # No data loaded yet
+    >>> print(loader.data)  # Data loaded here
+    """
+
+    def __init__(
+        self, measurement_id: str, options: dict | None = None, use_cache: bool = True
+    ):
+        # Don't call parent __init__ - we defer everything
+        self._measurement_id = measurement_id
+        self._options = options or {}
+        self._use_cache = use_cache
+        self._loaded = False
+        self._lazy_frame: pl.LazyFrame | None = None
+        self._steps_df: pl.DataFrame | None = None
+
+    def _ensure_loaded(self) -> None:
+        """Load data if not already loaded."""
+        if self._loaded:
+            return
+
+        from ionworks import Ionworks
+
+        client = Ionworks()
+
+        # Try loading steps from cache first
+        cached_data = None
+        if self._use_cache:
+            cached_data = _load_from_cache(self._measurement_id)
+
+        if cached_data is not None and "steps" in cached_data:
+            steps_df = cached_data["steps"]
+            if isinstance(steps_df, (dict, pd.DataFrame)):
+                if isinstance(steps_df, dict):
+                    steps_df = pd.DataFrame(steps_df)
+                steps_df = pl.from_pandas(steps_df)
+        else:
+            # Get steps metadata from API
+            steps_and_cycles = client.cell_measurement.steps_and_cycles(
+                self._measurement_id
+            )
+            steps_df = steps_and_cycles.steps
+            if isinstance(steps_df, pd.DataFrame):
+                steps_df = pl.from_pandas(steps_df)
+
+        self._steps_df = steps_df
+
+        # Build lazy frame with filters pushed down
+        lf = client.cell_measurement.time_series_lazy(self._measurement_id)
+
+        # Apply step filtering
+        first_step = self._options.get("first_step")
+        last_step = self._options.get("last_step")
+
+        if first_step is not None or last_step is not None:
+            # Resolve step indices
+            if first_step is not None:
+                first_step_idx = self._get_step(first_step, steps_df, first=True)
+            else:
+                first_step_idx = 0
+
+            if last_step is not None:
+                last_step_idx = self._get_step(last_step, steps_df, first=False)
+            else:
+                last_step_idx = len(steps_df) - 1
+
+            # Push filter to LazyFrame
+            lf = lf.filter(
+                (pl.col("Step count") >= first_step_idx)
+                & (pl.col("Step count") <= last_step_idx)
+            )
+
+            # Slice steps to match
+            self._steps_df = steps_df.slice(
+                first_step_idx, last_step_idx - first_step_idx + 1
+            )
+        else:
+            first_step_idx = 0
+            last_step_idx = len(steps_df) - 1
+
+        # Collect the lazy frame
+        time_series = lf.collect()
+
+        # Mark as loaded BEFORE calling super().__init__ to prevent recursion
+        self._loaded = True
+
+        # Now initialize the parent class with the loaded data
+        # We need to bypass the parent __init__ filtering since we already filtered
+        super(DataLoader, self).__init__(
+            time_series.to_pandas(),
+            self._options.get("filters"),
+            self._options.get("interpolate"),
+        )
+
+        # Set up DataLoader-specific attributes
+        self._steps = self._steps_df.to_pandas()
+
+        if first_step_idx == 0:
+            self._initial_voltage = self._steps.iloc[0]["Start voltage [V]"]
+        else:
+            self._initial_voltage = steps_df[first_step_idx - 1, "End voltage [V]"]
+
+        self._start_idx = int(self._steps["Start index"].iloc[0])
+        self._end_idx = int(self._steps["End index"].iloc[-1]) + 1
+        self._first_step = first_step
+        self._last_step = last_step
+        self._filters = self._options.get("filters")
+        self._interpolate = self._options.get("interpolate")
+
+    @property
+    def data(self) -> pd.DataFrame:
+        """Get the time series data, loading if necessary."""
+        if not self._loaded:
+            self._ensure_loaded()
+        return self._data
+
+    @data.setter
+    def data(self, value: pd.DataFrame) -> None:
+        """Set the time series data."""
+        self._data = value
+
+    @property
+    def steps(self) -> pd.DataFrame:
+        """Get the steps data, loading if necessary."""
+        if not self._loaded:
+            self._ensure_loaded()
+        return self._steps
+
+    @steps.setter
+    def steps(self, value: pd.DataFrame) -> None:
+        """Set the steps data."""
+        self._steps = value
+
+    @property
+    def initial_voltage(self) -> float:
+        """Get the initial voltage, loading if necessary."""
+        if not self._loaded:
+            self._ensure_loaded()
+        return self._initial_voltage
+
+    @initial_voltage.setter
+    def initial_voltage(self, value: float) -> None:
+        """Set the initial voltage."""
+        self._initial_voltage = value
+
+    def __repr__(self) -> str:
+        if self._loaded:
+            return f"LazyDataLoader(measurement_id={self._measurement_id!r}, loaded=True, rows={len(self.data)})"
+        return f"LazyDataLoader(measurement_id={self._measurement_id!r}, loaded=False)"
