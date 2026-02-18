@@ -33,6 +33,7 @@ dev = [
 
 [tool.hatch]
 version.source = "vcs"
+version.fallback-version = "0.0.0"
 build.hooks.vcs.version-file = "ionworksdata/_version.py"
 build.targets.sdist.include = ["ionworksdata"]
 
