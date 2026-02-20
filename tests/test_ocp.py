@@ -185,8 +185,8 @@ class TestMeasurementDetailsOCP:
             ocp_csv, {"name": "test"}, data_type="ocp"
         )
         assert "time_series" in result
-        assert "steps" in result
         assert "measurement" in result
+        assert "steps" not in result
 
     def test_time_series_columns(self, ocp_csv):
         result = iwdata.read.measurement_details(
@@ -207,11 +207,12 @@ class TestMeasurementDetailsOCP:
         )
         assert result["time_series"].shape == (100, 4)
 
-    def test_steps_shape(self, ocp_csv):
+    def test_no_steps_returned(self, ocp_csv):
+        """OCP path does not produce steps — the cloud handles it."""
         result = iwdata.read.measurement_details(
             ocp_csv, {"name": "test"}, data_type="ocp"
         )
-        assert result["steps"].shape[0] == 1
+        assert "steps" not in result
 
     def test_measurement_metadata(self, ocp_csv):
         result = iwdata.read.measurement_details(

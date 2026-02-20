@@ -671,8 +671,6 @@ def _read_ocp_measurement(
         if data.schema[col] != pl.Float64 and col not in ("Step count", "Cycle count"):
             data = data.with_columns(pl.col(col).cast(pl.Float64, strict=False))
 
-    steps = iwdata.steps.ocp_steps(data)
-
     opts = options or {}
     should_validate = opts.get("validate", True)
     validate_strict = opts.get("validate_strict", False)
@@ -684,7 +682,6 @@ def _read_ocp_measurement(
 
     return {
         "measurement": measurement,
-        "steps": steps,
         "time_series": data,
     }
 
