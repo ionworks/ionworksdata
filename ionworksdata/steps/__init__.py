@@ -31,7 +31,6 @@ Example usage::
 """
 
 from ._core import (
-    ocp_steps,
     summarize,
     identify,
     set_cycle_capacity,
@@ -45,7 +44,6 @@ from ._pulse import label_pulse
 from ._eis import label_eis
 
 __all__ = [
-    "ocp_steps",
     "summarize",
     "identify",
     "set_cycle_capacity",
