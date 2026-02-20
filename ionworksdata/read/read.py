@@ -599,9 +599,10 @@ def _read_ocp_measurement(
     """
     Read OCP (open-circuit potential) data and return a measurement dict.
 
-    This is a simplified path that only requires ``Voltage [V]`` (and
-    optionally ``Capacity [A.h]``) in the source data.  Synthetic ``Step
-    count`` and ``Cycle count`` columns are added automatically.
+    This is a simplified path that requires ``Voltage [V]`` and at least
+    one x-axis column (``Capacity [A.h]``, ``Stoichiometry``, or ``SOC``)
+    in the source data.  Synthetic ``Step count`` and ``Cycle count``
+    columns are added automatically.
 
     Parameters
     ----------
@@ -641,6 +642,14 @@ def _read_ocp_measurement(
             f"extra_column_mappings). Available columns: {data.columns}"
         )
 
+    x_axis_columns = ["Capacity [A.h]", "Stoichiometry", "SOC"]
+    if not any(col in data.columns for col in x_axis_columns):
+        raise ValueError(
+            "OCP data must contain at least one x-axis column: "
+            f"{', '.join(x_axis_columns)} (after applying extra_column_mappings). "
+            f"Available columns: {list(data.columns)}"
+        )
+
     if extra_constant_columns:
         for col, value in extra_constant_columns.items():
             data = data.with_columns(pl.lit(value).alias(col))
@@ -653,8 +662,9 @@ def _read_ocp_measurement(
     )
 
     cols_to_keep = ["Voltage [V]", "Step count", "Cycle count"]
-    if "Capacity [A.h]" in data.columns:
-        cols_to_keep.append("Capacity [A.h]")
+    for xc in x_axis_columns:
+        if xc in data.columns:
+            cols_to_keep.append(xc)
     if extra_column_mappings:
         for mapped in extra_column_mappings.values():
             if mapped in data.columns and mapped not in cols_to_keep:

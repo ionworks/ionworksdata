@@ -110,18 +110,46 @@ class TestMeasurementDetailsOCP:
         with pytest.raises(ValueError, match="Voltage"):
             iwdata.read.measurement_details(path, {"name": "bad"}, data_type="ocp")
 
-    def test_voltage_only(self, tmp_path):
-        """Capacity [A.h] is optional — only Voltage [V] is required."""
+    def test_voltage_only_raises(self, tmp_path):
+        """Voltage without an x-axis column must raise."""
         df = pd.DataFrame({"Voltage [V]": [4.2, 4.0, 3.8]})
         path = tmp_path / "voltage_only.csv"
         df.to_csv(path, index=False)
 
+        with pytest.raises(ValueError, match="x-axis"):
+            iwdata.read.measurement_details(path, {"name": "vonly"}, data_type="ocp")
+
+    def test_stoichiometry_x_axis(self, tmp_path):
+        """Stoichiometry is accepted as an x-axis column."""
+        df = pd.DataFrame(
+            {
+                "Voltage [V]": np.linspace(4.2, 3.0, 20),
+                "Stoichiometry": np.linspace(0.0, 1.0, 20),
+            }
+        )
+        path = tmp_path / "stoich.csv"
+        df.to_csv(path, index=False)
+
         result = iwdata.read.measurement_details(
-            path, {"name": "vonly"}, data_type="ocp"
+            path, {"name": "stoich"}, data_type="ocp"
         )
         ts = result["time_series"]
-        assert "Voltage [V]" in ts.columns
-        assert "Capacity [A.h]" not in ts.columns
+        assert "Stoichiometry" in ts.columns
+
+    def test_soc_x_axis(self, tmp_path):
+        """SOC is accepted as an x-axis column."""
+        df = pd.DataFrame(
+            {
+                "Voltage [V]": np.linspace(4.2, 3.0, 20),
+                "SOC": np.linspace(0.0, 1.0, 20),
+            }
+        )
+        path = tmp_path / "soc.csv"
+        df.to_csv(path, index=False)
+
+        result = iwdata.read.measurement_details(path, {"name": "soc"}, data_type="ocp")
+        ts = result["time_series"]
+        assert "SOC" in ts.columns
 
     def test_validation_passes(self, ocp_csv):
         """OCP path should pass validation without raising."""
