@@ -589,15 +589,123 @@ def start_time(
     return reader_object.read_start_time(filename, extra_column_mappings, options)
 
 
+def _read_ocp_measurement(
+    filename: str | Path,
+    measurement: dict[str, str],
+    extra_column_mappings: dict[str, str] | None = None,
+    extra_constant_columns: dict[str, float] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Read OCP (open-circuit potential) data and return a measurement dict.
+
+    This is a simplified path that requires ``Voltage [V]`` and at least
+    one x-axis column (``Capacity [A.h]``, ``Stoichiometry``, or ``SOC``)
+    in the source data.  Synthetic ``Step count`` and ``Cycle count``
+    columns are added automatically.
+
+    Parameters
+    ----------
+    filename : str | Path
+        Path to a CSV file containing the OCP data.
+    measurement : dict
+        Measurement metadata dictionary (updated in-place).
+    extra_column_mappings : dict, optional
+        Maps raw column names to standard names, e.g.
+        ``{"SOC": "Capacity [A.h]", "OCV": "Voltage [V]"}``.
+    extra_constant_columns : dict, optional
+        Constant-valued columns to add to the time series.
+    options : dict, optional
+        ``validate`` (bool, default True) and ``validate_strict`` (bool,
+        default False) control validation behaviour.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"time_series": pl.DataFrame, "steps": pl.DataFrame,
+        "measurement": dict}``
+    """
+    data = pl.read_csv(filename)
+
+    if extra_column_mappings:
+        rename_map = {
+            old: new
+            for old, new in extra_column_mappings.items()
+            if old in data.columns
+        }
+        if rename_map:
+            data = data.rename(rename_map)
+
+    if "Voltage [V]" not in data.columns:
+        raise ValueError(
+            "OCP data must contain a 'Voltage [V]' column (after applying "
+            f"extra_column_mappings). Available columns: {data.columns}"
+        )
+
+    x_axis_columns = ["Capacity [A.h]", "Stoichiometry", "SOC"]
+    if not any(col in data.columns for col in x_axis_columns):
+        raise ValueError(
+            "OCP data must contain at least one x-axis column: "
+            f"{', '.join(x_axis_columns)} (after applying extra_column_mappings). "
+            f"Available columns: {list(data.columns)}"
+        )
+
+    if extra_constant_columns:
+        for col, value in extra_constant_columns.items():
+            data = data.with_columns(pl.lit(value).alias(col))
+
+    data = data.with_columns(
+        [
+            pl.lit(0).cast(pl.Int64).alias("Step count"),
+            pl.lit(0).cast(pl.Int64).alias("Cycle count"),
+        ]
+    )
+
+    cols_to_keep = ["Voltage [V]", "Step count", "Cycle count"]
+    for xc in x_axis_columns:
+        if xc in data.columns:
+            cols_to_keep.append(xc)
+    if extra_column_mappings:
+        for mapped in extra_column_mappings.values():
+            if mapped in data.columns and mapped not in cols_to_keep:
+                cols_to_keep.append(mapped)
+    if extra_constant_columns:
+        for col in extra_constant_columns:
+            if col not in cols_to_keep:
+                cols_to_keep.append(col)
+
+    data = data.select([c for c in cols_to_keep if c in data.columns])
+
+    # Coerce numeric columns
+    for col in data.columns:
+        if data.schema[col] != pl.Float64 and col not in ("Step count", "Cycle count"):
+            data = data.with_columns(pl.col(col).cast(pl.Float64, strict=False))
+
+    opts = options or {}
+    should_validate = opts.get("validate", True)
+    validate_strict = opts.get("validate_strict", False)
+    if should_validate:
+        validate_measurement_data(data, strict=validate_strict, data_type="ocp")
+
+    measurement["data_type"] = "ocp"
+    measurement["step_labels_validated"] = False
+
+    return {
+        "measurement": measurement,
+        "time_series": data,
+    }
+
+
 def measurement_details(
     filename: str | Path,
     measurement: dict[str, str],
     reader: str | None = None,
     extra_column_mappings: dict[str, str] | None = None,
     extra_constant_columns: dict[str, float] | None = None,
-    options: dict[str, str] | None = None,
+    options: dict[str, Any] | None = None,
     labels: list[dict[str, Any]] | None = None,
     keep_only_required_columns: bool = True,
+    data_type: str | None = None,
 ) -> dict[str, Any]:
     """
     Read the time series data from cycler file into a dataframe using :func:`ionworksdata.read.time_series_and_steps`
@@ -634,6 +742,11 @@ def measurement_details(
     keep_only_required_columns : bool, optional
         If True, only the required columns are kept in the time series. Default is True.
         See :func:`ionworksdata.read.keep_required_columns` for the required columns.
+    data_type : str | None, optional
+        The type of data in the file. Use ``"ocp"`` for open-circuit potential
+        data, which uses a simplified processing path that only requires
+        ``Voltage [V]`` (and optionally ``Capacity [A.h]``). Default is
+        ``None`` (standard cycler data).
 
     Returns
     -------
@@ -643,6 +756,15 @@ def measurement_details(
         - "steps": pl.DataFrame with the steps data
         - "measurement": dict with the updated measurement information
     """
+    if data_type == "ocp":
+        return _read_ocp_measurement(
+            filename,
+            measurement,
+            extra_column_mappings=extra_column_mappings,
+            extra_constant_columns=extra_constant_columns,
+            options=options,
+        )
+
     # Validate argument order (skip measurement parameter)
     _validate_argument_order(filename, reader, "measurement_details")
 
@@ -769,9 +891,9 @@ def measurement_details(
     if test_start_time is not None:
         measurement["start_time"] = test_start_time.isoformat()
 
-    measurement_details = {
+    measurement_details_result = {
         "measurement": measurement,
         "steps": steps,
         "time_series": data,
     }
-    return measurement_details
+    return measurement_details_result

@@ -313,7 +313,7 @@ def test_data_loader_to_config_with_filters():
 
     assert "data" in config
     assert "options" in config
-    assert config["options"]["filters"] == filters
+    assert config["options"]["transforms"]["filters"] == filters
 
 
 def test_data_loader_to_config_with_interpolate():
@@ -339,7 +339,7 @@ def test_data_loader_to_config_with_interpolate():
 
     assert "data" in config
     assert "options" in config
-    assert config["options"]["interpolate"] == 0.5
+    assert config["options"]["transforms"]["interpolate"] == 0.5
 
     # Test with numpy array interpolate
     interpolate_array = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
@@ -347,8 +347,8 @@ def test_data_loader_to_config_with_interpolate():
     config2 = data_loader2.to_config()
 
     assert "options" in config2
-    assert isinstance(config2["options"]["interpolate"], list)
-    assert config2["options"]["interpolate"] == interpolate_array.tolist()
+    assert isinstance(config2["options"]["transforms"]["interpolate"], list)
+    assert config2["options"]["transforms"]["interpolate"] == interpolate_array.tolist()
 
 
 def test_data_loader_roundtrip_filter_data_true():
@@ -498,7 +498,7 @@ def test_ocp_data_loader_to_config_with_filters():
 
     assert "data" in config
     assert "options" in config
-    assert config["options"]["filters"] == filters
+    assert config["options"]["transforms"]["filters"] == filters
 
 
 def test_ocp_data_loader_to_config_all_args():
@@ -521,11 +521,11 @@ def test_ocp_data_loader_to_config_all_args():
     config = data_loader.to_config()
 
     assert "options" in config
-    assert config["options"]["filters"] == filters
+    assert config["options"]["transforms"]["filters"] == filters
 
 
 def test_ocp_data_loader_roundtrip():
-    """Test OCPDataLoader config -> OCPDataLoader -> config roundtrip."""
+    """Test OCPDataLoader config -> DataLoader -> config roundtrip."""
     ocp_data = pd.DataFrame(
         {
             "Capacity [A.h]": [0.0, 0.1, 0.2, 0.3, 0.4],
@@ -544,13 +544,11 @@ def test_ocp_data_loader_roundtrip():
         },
     )
 
-    # Convert to config
     config = data_loader1.to_config()
 
-    # Create new OCPDataLoader from config
-    data_loader2 = iwdata.OCPDataLoader(config["data"], **config.get("options", {}))
+    # Roundtrip via DataLoader (the new canonical path)
+    data_loader2 = iwdata.DataLoader(config["data"], steps=None, **config.get("options", {}))
 
-    # Check that both OCPDataLoaders produce same data
     pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
 
 
@@ -560,15 +558,12 @@ def test_ocp_data_loader_copy():
     original = iwdata.OCPDataLoader(data)
     copy = original.copy()
 
-    # Verify it's a different instance
     assert copy is not original
-    assert isinstance(copy, iwdata.OCPDataLoader)
+    assert isinstance(copy, iwdata.DataLoader)
 
-    # Verify data is copied
     pd.testing.assert_frame_equal(original.data, copy.data)
     assert copy.data is not original.data
 
-    # Verify all columns are preserved
     assert list(original.data.columns) == list(copy.data.columns)
     for col in original.data.columns:
         pd.testing.assert_series_equal(original.data[col], copy.data[col])
@@ -766,7 +761,7 @@ def test_get_step_with_integer():
 
 def test_get_step_dict_deprecation_warning():
     """Test that dict format triggers deprecation warning."""
-    with pytest.warns(DeprecationWarning, match="ionworkspipeline"):
+    with pytest.warns(DeprecationWarning, match="dict format for step selection"):
         iwdata.DataLoader.from_local(
             Path("tests/test_data/cccv-synthetic-with-steps"),
             {"first_step": {"step": 2}, "last_step": {"step": 4}},
@@ -1051,6 +1046,7 @@ def test_ocp_dataloader_from_db():
 
     mock_measurement_detail = MagicMock()
     mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = None
 
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
@@ -1059,7 +1055,7 @@ def test_ocp_dataloader_from_db():
         data_loader = iwdata.OCPDataLoader.from_db("test-ocp-id-456", use_cache=False)
 
     mock_client.cell_measurement.detail.assert_called_once_with("test-ocp-id-456")
-    assert isinstance(data_loader, iwdata.OCPDataLoader)
+    assert isinstance(data_loader, iwdata.DataLoader)
     assert data_loader._measurement_id == "test-ocp-id-456"  # noqa: SLF001
 
 
@@ -1162,6 +1158,7 @@ def test_ocp_data_loader_to_config_with_db():
 
     mock_measurement_detail = MagicMock()
     mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = None
 
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
@@ -1191,6 +1188,7 @@ def test_ocp_data_loader_to_config_with_db_and_options():
 
     mock_measurement_detail = MagicMock()
     mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = None
 
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
@@ -1211,12 +1209,10 @@ def test_ocp_data_loader_to_config_with_db_and_options():
 
     config = data_loader.to_config()
 
-    # Should have data key with db: prefix
     assert "data" in config
     assert config["data"] == "db:test-ocp-id-with-filters"
-    # Should have options with filters
     assert "options" in config
-    assert config["options"]["filters"] == filters
+    assert config["options"]["transforms"]["filters"] == filters
 
 
 def test_ocp_data_loader_capacity_column_explicit():
@@ -1323,8 +1319,8 @@ def test_ocp_data_loader_to_config_includes_preprocessing_options():
     config = loader.to_config()
     assert "options" in config
     assert config["options"]["capacity_column"] == "Discharge capacity [A.h]"
-    assert config["options"]["sort"] is True
-    assert config["options"]["remove_duplicates"] is True
+    assert config["options"]["transforms"]["sort"] is True
+    assert config["options"]["transforms"]["remove_duplicates"] is True
 
 
 # =============================================================================
@@ -1700,6 +1696,7 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
 
     mock_measurement_detail = MagicMock()
     mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = None
 
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
@@ -1726,3 +1723,203 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
         loader1.data.reset_index(drop=True),
         loader2.data.reset_index(drop=True),
     )
+
+
+# =============================================================================
+# DataLoader without steps tests
+# =============================================================================
+
+
+def test_data_loader_without_steps():
+    """Test creating DataLoader with steps=None."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.1, 0.2, 0.3],
+            "Voltage [V]": [3.5, 3.6, 3.7, 3.8],
+        }
+    )
+    loader = iwdata.DataLoader(data, steps=None)
+    assert isinstance(loader, iwdata.DataLoader)
+    assert loader.steps is None
+    assert "Voltage [V]" in loader.data.columns
+    assert "Capacity [A.h]" in loader.data.columns
+
+
+def test_data_loader_without_steps_voltage_alias():
+    """Test that voltage column aliasing works in no-steps mode."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+            "OCP [V]": [3.5, 3.6, 3.7],
+        }
+    )
+    loader = iwdata.DataLoader(data)
+    assert "Voltage [V]" in loader.data.columns
+
+
+def test_data_loader_without_steps_capacity_alias():
+    """Test that capacity column aliasing works in no-steps mode."""
+    data = pd.DataFrame(
+        {
+            "Discharge capacity [A.h]": [0.0, 0.1, 0.2],
+            "Voltage [V]": [3.5, 3.6, 3.7],
+        }
+    )
+    loader = iwdata.DataLoader(data)
+    assert "Capacity [A.h]" in loader.data.columns
+
+
+def test_data_loader_without_steps_transforms():
+    """Test that transforms work on DataLoader without steps."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [2.5, 3.0, 3.5, 4.0],
+            "Capacity [A.h]": [0.3, 0.2, 0.1, 0.0],
+        }
+    )
+    loader = iwdata.DataLoader(
+        data,
+        steps=None,
+        options={"transforms": {"sort": True}},
+    )
+    assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
+    assert loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
+
+
+def test_data_loader_without_steps_to_config():
+    """Test to_config for DataLoader without steps."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+            "Voltage [V]": [3.5, 3.6, 3.7],
+        }
+    )
+    loader = iwdata.DataLoader(data)
+    config = loader.to_config()
+    assert "data" in config
+    assert isinstance(config["data"], dict)
+    assert "options" not in config
+
+
+def test_data_loader_without_steps_copy():
+    """Test copy for DataLoader without steps."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+            "Voltage [V]": [3.5, 3.6, 3.7],
+        }
+    )
+    original = iwdata.DataLoader(data)
+    copy = original.copy()
+    assert copy is not original
+    assert copy.steps is None
+    pd.testing.assert_frame_equal(original.data, copy.data)
+
+
+def test_data_loader_from_local_without_steps(tmp_path):
+    """Test from_local when only time_series.csv exists (no steps.csv)."""
+    ts = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.5, 1.0],
+            "Voltage [V]": [4.0, 3.5, 3.0],
+        }
+    )
+    ts.to_csv(tmp_path / "time_series.csv", index=False)
+    loader = iwdata.DataLoader.from_local(str(tmp_path))
+    assert loader.steps is None
+    assert len(loader.data) == 3
+
+
+# =============================================================================
+# GITT-to-OCP transform tests
+# =============================================================================
+
+
+def test_gitt_to_ocp_transform():
+    """Test that gitt_to_ocp transform extracts end-of-rest OCP points."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8, 3.7, 3.65,
+                3.60, 3.61, 3.62,
+                3.5, 3.4, 3.35,
+                3.30, 3.31, 3.32,
+            ],
+            "Current [A]": [
+                -1, -1, -1,
+                0, 0, 0,
+                -1, -1, -1,
+                0, 0, 0,
+            ],
+            "Discharge capacity [A.h]": [
+                0.01, 0.02, 0.03,
+                0.03, 0.03, 0.03,
+                0.04, 0.05, 0.06,
+                0.06, 0.06, 0.06,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+            "Duration [s]": [3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0],
+        }
+    )
+
+    loader = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True}},
+    )
+
+    assert loader.steps is None
+    assert len(loader.data) == 2
+    assert "Voltage [V]" in loader.data.columns
+    assert "Capacity [A.h]" in loader.data.columns
+    np.testing.assert_array_almost_equal(
+        loader.data["Voltage [V]"].values, [3.62, 3.32]
+    )
+    assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+
+
+def test_gitt_to_ocp_requires_steps():
+    """Test that gitt_to_ocp raises error when no steps are provided."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    with pytest.raises(ValueError, match="gitt_to_ocp requires steps"):
+        iwdata.DataLoader(
+            data,
+            steps=None,
+            options={"transforms": {"gitt_to_ocp": True}},
+        )
+
+
+def test_ocpdataloader_deprecation_warning():
+    """Test that OCPDataLoader emits a deprecation warning."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    with pytest.warns(DeprecationWarning, match="OCPDataLoader is deprecated"):
+        iwdata.OCPDataLoader(data)
