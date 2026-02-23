@@ -291,10 +291,11 @@ class DataLoader(GenericDataLoader):
     Unified data loader for time-series and OCP data.
 
     Handles two modes:
-    - **With steps**: loads time-series data with step information for simulation,
-      experiment generation, etc.
-    - **Without steps**: loads simple tabular data (e.g. OCP curves with Capacity
-      and Voltage columns).
+
+    - **With steps**: loads time-series data with step information for
+      simulation, experiment generation, etc.
+    - **Without steps**: loads simple tabular data (e.g. OCP curves with
+      Capacity and Voltage columns).
 
     Post-load preprocessing is configured via the ``transforms`` dict option.
 
@@ -304,17 +305,20 @@ class DataLoader(GenericDataLoader):
         The data to load. Can be a Pandas/Polars DataFrame or a dict.
     steps : pd.DataFrame | pl.DataFrame | dict | None, optional
         Step information. When None, the loader operates in simple (no-steps) mode.
-    **kwargs
+    ``**kwargs``
         Options passed directly or via an ``options`` dict. Supported keys:
 
         When steps are provided:
+
             - first_step, last_step : str | int
             - first_step_dict, last_step_dict : dict (deprecated)
 
         When steps are None:
+
             - capacity_column : str
 
         Always:
+
             - transforms : dict with any of:
                 - gitt_to_ocp : bool
                 - sort : bool
