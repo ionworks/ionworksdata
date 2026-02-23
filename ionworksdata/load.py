@@ -313,12 +313,8 @@ class DataLoader(GenericDataLoader):
             - first_step, last_step : str | int
             - first_step_dict, last_step_dict : dict (deprecated)
 
-        When steps are None:
-
-            - capacity_column : str
-
         Always:
-
+            - capacity_column : str
             - transforms : dict with any of:
                 - gitt_to_ocp : bool
                 - sort : bool
@@ -346,10 +342,15 @@ class DataLoader(GenericDataLoader):
         self._transforms = transforms
         self._measurement_id = None
 
+        capacity_column = merged.get("capacity_column")
+        self._capacity_column = capacity_column
+
         if steps is not None:
             data = self._init_with_steps(time_series, steps, merged)
         else:
             data = self._init_without_steps(time_series, merged)
+
+        data = self._alias_columns(data, capacity_column)
 
         super().__init__(data)
         self._apply_transforms()
@@ -453,9 +454,11 @@ class DataLoader(GenericDataLoader):
                     + ", ".join(potential_ocp_column_names)
                 )
 
-        # Capacity column aliasing
-        capacity_column = options.get("capacity_column")
-        self._capacity_column = capacity_column
+        return time_series
+
+    @staticmethod
+    def _alias_columns(data, capacity_column):
+        """Resolve capacity column aliases on the DataFrame."""
         potential_capacity_column_names = [
             "Capacity [A.h]",
             "Discharge capacity [A.h]",
@@ -465,20 +468,19 @@ class DataLoader(GenericDataLoader):
             "Charge capacity [mA.h.cm-2]",
         ]
         if capacity_column is not None:
-            if capacity_column in time_series.columns:
-                time_series["Capacity [A.h]"] = time_series[capacity_column]
+            if capacity_column in data.columns:
+                data["Capacity [A.h]"] = data[capacity_column]
             else:
                 raise ValueError(
                     f"Specified capacity_column '{capacity_column}' not found in data. "
-                    f"Available columns: {list(time_series.columns)}"
+                    f"Available columns: {list(data.columns)}"
                 )
-        elif "Capacity [A.h]" not in time_series.columns:
+        elif "Capacity [A.h]" not in data.columns:
             for column in potential_capacity_column_names:
-                if column in time_series.columns:
-                    time_series["Capacity [A.h]"] = time_series[column]
+                if column in data.columns:
+                    data["Capacity [A.h]"] = data[column]
                     break
-
-        return time_series
+        return data
 
     def set_processed_internal_state(
         self,
@@ -1084,7 +1086,13 @@ class DataLoader(GenericDataLoader):
         DataLoader
         """
         read_fn = pl.read_csv if use_polars else pd.read_csv
-        time_series = read_fn(Path(data_path) / "time_series.csv")
+        ts_path = Path(data_path) / "time_series.csv"
+        if not ts_path.exists():
+            raise ValueError(
+                f"Folder must contain either time_series.csv or both "
+                f"time_series.csv and steps.csv. Path: {data_path}"
+            )
+        time_series = read_fn(ts_path)
         steps_path = Path(data_path) / "steps.csv"
         steps = read_fn(steps_path) if steps_path.exists() else None
         options = options or {}
