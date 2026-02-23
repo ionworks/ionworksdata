@@ -476,6 +476,26 @@ class DataLoader(GenericDataLoader):
 
         return time_series
 
+    def set_processed_internal_state(
+        self,
+        *,
+        transforms=None,
+        measurement_id=None,
+        capacity_column=None,
+        first_step=None,
+        last_step=None,
+        original_time_series=None,
+        original_steps=None,
+    ):
+        """Set internal state when constructing from processed data. Used by from_processed_data."""
+        self._transforms = transforms if transforms is not None else {}
+        self._measurement_id = measurement_id
+        self._capacity_column = capacity_column
+        self._first_step = first_step
+        self._last_step = last_step
+        self._original_time_series = original_time_series
+        self._original_steps = original_steps
+
     # ------------------------------------------------------------------
     # Transforms
     # ------------------------------------------------------------------
@@ -515,10 +535,12 @@ class DataLoader(GenericDataLoader):
             discharge = row.get("Discharge capacity [A.h]", 0)
             charge = row.get("Charge capacity [A.h]", 0)
             capacity = abs(discharge - charge)
-            ocp_points.append({
-                "Capacity [A.h]": capacity,
-                "Voltage [V]": row["Voltage [V]"],
-            })
+            ocp_points.append(
+                {
+                    "Capacity [A.h]": capacity,
+                    "Voltage [V]": row["Voltage [V]"],
+                }
+            )
 
         ocp_df = pd.DataFrame(ocp_points)
         ocp_df = ocp_df.sort_values("Capacity [A.h]").reset_index(drop=True)
@@ -640,8 +662,15 @@ class DataLoader(GenericDataLoader):
         )
 
     def _calculate_differential_cutoff(
-        self, x, y, dydx, method="explicit", show_plot=False,
-        xlabel=None, ylabel=None, options=None,
+        self,
+        x,
+        y,
+        dydx,
+        method="explicit",
+        show_plot=False,
+        xlabel=None,
+        ylabel=None,
+        options=None,
     ) -> float:
         options = options or {}
         if method == "explicit":
@@ -659,8 +688,16 @@ class DataLoader(GenericDataLoader):
         raise ValueError(f"Method {method} not recognized")
 
     def _calculate_differential_cutoff_explicit(
-        self, x, y, dydx, show_plot=False, xlabel=None, ylabel=None,
-        lower_ratio=0.1, upper_ratio=0.9, scale=1.1,
+        self,
+        x,
+        y,
+        dydx,
+        show_plot=False,
+        xlabel=None,
+        ylabel=None,
+        lower_ratio=0.1,
+        upper_ratio=0.9,
+        scale=1.1,
     ) -> float:
         x = np.array(x)
         x_scaled = (x - x.min()) / (x.max() - x.min())
@@ -675,8 +712,15 @@ class DataLoader(GenericDataLoader):
         return dydx_cutoff
 
     def _calculate_differential_cutoff_quantile(
-        self, x, y, dydx, show_plot=False, xlabel=None, ylabel=None,
-        quantile=0.8, scale=2,
+        self,
+        x,
+        y,
+        dydx,
+        show_plot=False,
+        xlabel=None,
+        ylabel=None,
+        quantile=0.8,
+        scale=2,
     ) -> float:
         x = np.array(x)
         x_interp = np.linspace(x.min(), x.max(), 1000)
@@ -687,17 +731,30 @@ class DataLoader(GenericDataLoader):
             fig, ax = self._plot_differential_cutoff(
                 x_interp, dydx_interp, dydx_cutoff, xlabel, ylabel
             )
-            ax.axhline(quantile_value, color="tab:blue", linestyle="--",
-                        label="Quantile", zorder=10)
-            ax.axhline(dydx_cutoff, color="tab:red", linestyle="--",
-                        label="Cut-off", zorder=10)
+            ax.axhline(
+                quantile_value,
+                color="tab:blue",
+                linestyle="--",
+                label="Quantile",
+                zorder=10,
+            )
+            ax.axhline(
+                dydx_cutoff, color="tab:red", linestyle="--", label="Cut-off", zorder=10
+            )
             ax.legend()
             plt.show()
         return dydx_cutoff
 
     def _calculate_differential_cutoff_peaks(
-        self, x, y, dydx, show_plot=False, xlabel=None, ylabel=None,
-        scale=1.1, **kwargs,
+        self,
+        x,
+        y,
+        dydx,
+        show_plot=False,
+        xlabel=None,
+        ylabel=None,
+        scale=1.1,
+        **kwargs,
     ) -> float:
         x = np.array(x)
         x_interp = np.linspace(x.min(), x.max(), 1000)
@@ -775,7 +832,9 @@ class DataLoader(GenericDataLoader):
             if self._original_time_series is not None:
                 config = {
                     "data": {
-                        "time_series": self._original_time_series.to_dict(orient="list"),
+                        "time_series": self._original_time_series.to_dict(
+                            orient="list"
+                        ),
                         "steps": self._original_steps.to_dict(orient="list"),
                     },
                 }
@@ -852,11 +911,15 @@ class DataLoader(GenericDataLoader):
         match list(step_dict.keys())[0]:
             case "cycle":
                 return DataLoader._get_step_from_cycle(
-                    list(step_dict.values())[0], all_steps, first,
+                    list(step_dict.values())[0],
+                    all_steps,
+                    first,
                 )
             case "step":
                 return DataLoader._get_step_from_step(
-                    list(step_dict.values())[0], all_steps, first,
+                    list(step_dict.values())[0],
+                    all_steps,
+                    first,
                 )
             case _:
                 raise ValueError(f"Unknown step type: {list(step_dict.keys())[0]}")
@@ -1071,7 +1134,12 @@ class DataLoader(GenericDataLoader):
 
     @classmethod
     def from_processed_data(
-        cls, data, steps, initial_voltage, start_idx, end_idx,
+        cls,
+        data,
+        steps,
+        initial_voltage,
+        start_idx,
+        end_idx,
     ):
         """
         Create a DataLoader from already-processed data, bypassing __init__.
@@ -1102,13 +1170,7 @@ class DataLoader(GenericDataLoader):
         instance.initial_voltage = initial_voltage
         instance.start_idx = start_idx
         instance.end_idx = end_idx
-        instance._transforms = {}
-        instance._measurement_id = None
-        instance._capacity_column = None
-        instance._first_step = None
-        instance._last_step = None
-        instance._original_time_series = None
-        instance._original_steps = None
+        instance.set_processed_internal_state()
         super(DataLoader, instance).__init__(instance.data)
         return instance
 
@@ -1136,8 +1198,13 @@ class OCPDataLoader(DataLoader):
         options = kwargs.pop("options", None) or {}
         merged = {**options, **kwargs}
         transforms = dict(merged.pop("transforms", None) or {})
-        for key in ("sort", "remove_duplicates", "remove_extremes",
-                     "filters", "interpolate"):
+        for key in (
+            "sort",
+            "remove_duplicates",
+            "remove_extremes",
+            "filters",
+            "interpolate",
+        ):
             if key in merged and key not in transforms:
                 transforms[key] = merged.pop(key)
         if transforms:
@@ -1151,6 +1218,4 @@ class OCPDataLoader(DataLoader):
             DeprecationWarning,
             stacklevel=2,
         )
-        return DataLoader.from_db(
-            measurement_id, options=options, use_cache=use_cache
-        )
+        return DataLoader.from_db(measurement_id, options=options, use_cache=use_cache)

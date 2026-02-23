@@ -547,7 +547,9 @@ def test_ocp_data_loader_roundtrip():
     config = data_loader1.to_config()
 
     # Roundtrip via DataLoader (the new canonical path)
-    data_loader2 = iwdata.DataLoader(config["data"], steps=None, **config.get("options", {}))
+    data_loader2 = iwdata.DataLoader(
+        config["data"], steps=None, **config.get("options", {})
+    )
 
     pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
 
@@ -1783,7 +1785,9 @@ def test_data_loader_without_steps_transforms():
         options={"transforms": {"sort": True}},
     )
     assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
-    assert loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
+    assert (
+        loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
+    )
 
 
 def test_data_loader_without_steps_to_config():
@@ -1841,22 +1845,46 @@ def test_gitt_to_ocp_transform():
         {
             "Time [s]": list(range(12)),
             "Voltage [V]": [
-                3.8, 3.7, 3.65,
-                3.60, 3.61, 3.62,
-                3.5, 3.4, 3.35,
-                3.30, 3.31, 3.32,
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
             ],
             "Current [A]": [
-                -1, -1, -1,
-                0, 0, 0,
-                -1, -1, -1,
-                0, 0, 0,
+                -1,
+                -1,
+                -1,
+                0,
+                0,
+                0,
+                -1,
+                -1,
+                -1,
+                0,
+                0,
+                0,
             ],
             "Discharge capacity [A.h]": [
-                0.01, 0.02, 0.03,
-                0.03, 0.03, 0.03,
-                0.04, 0.05, 0.06,
-                0.06, 0.06, 0.06,
+                0.01,
+                0.02,
+                0.03,
+                0.03,
+                0.03,
+                0.03,
+                0.04,
+                0.05,
+                0.06,
+                0.06,
+                0.06,
+                0.06,
             ],
             "Charge capacity [A.h]": [0.0] * 12,
         }
