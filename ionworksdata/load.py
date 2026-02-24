@@ -334,12 +334,9 @@ class DataLoader(GenericDataLoader):
         steps: pd.DataFrame | pl.DataFrame | dict | None = None,
         **kwargs,
     ):
-        options = kwargs.pop("options", None) or {}
-        merged = {**options, **kwargs}
-        parsed = self._parse_options(merged)
-        self._transforms = parsed["transforms"]
+        options = {**(kwargs.pop("options", None) or {}), **kwargs}
         self._measurement_id = None
-        self._setup(time_series, steps, merged)
+        self._setup(time_series, steps, options)
 
     # ------------------------------------------------------------------
     # Data / steps properties (support lazy loading from DB)
@@ -392,8 +389,6 @@ class DataLoader(GenericDataLoader):
             if use_cache:
                 _save_to_cache(measurement_id, cache_payload)
 
-        parsed = self._parse_options(options)
-        self._transforms = parsed["transforms"]
         self._measurement_id = None
         self._setup(time_series, steps, options)
         # Restore the measurement_id that identifies the DB source.
@@ -421,6 +416,8 @@ class DataLoader(GenericDataLoader):
 
     def _setup(self, time_series, steps, options):
         """Set up data, steps, and transforms. Called from __init__ and lazy DB load."""
+        parsed = self._parse_options(options)
+        self._transforms = parsed["transforms"]
         if steps is not None:
             data = self._init_with_steps(time_series, steps, options)
         else:
