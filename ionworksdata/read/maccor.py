@@ -50,24 +50,40 @@ class Maccor(BaseReader):
 
         with open(filename, encoding=encoding) as f:
             if ext == ".csv":
-                reader = csv_py.reader(f)
+                lines = f.readlines()
+                # Detect delimiter: some Maccor .csv files are tab-separated (e.g. export)
+                skiprows = None
                 sep = ","
                 units_row = True
                 comment = "#"
+                for i, line in enumerate(lines):
+                    for candidate_sep, has_units in [(",", True), ("\t", False)]:
+                        row = [c.strip() for c in line.split(candidate_sep)]
+                        if "Step" in row:
+                            skiprows = i
+                            sep = candidate_sep
+                            units_row = has_units
+                            if sep == "\t":
+                                thousands = ","
+                            break
+                    if skiprows is not None:
+                        break
+                if skiprows is None:
+                    raise ValueError("Could not find header row in Maccor file")
             elif is_maccor_text_extension(ext):
                 reader = f.readlines()
                 sep = "\t"
                 thousands = ","
                 units_row = False
                 comment = None
+                for i, row in enumerate(reader):
+                    if "Step" in row:
+                        skiprows = i
+                        break
+                else:
+                    raise ValueError("Could not find header row in Maccor file")
             else:
                 raise ValueError(f"Unsupported file extension: {ext}")
-            for i, row in enumerate(reader):
-                if "Step" in row:
-                    skiprows = i
-                    break
-            else:
-                raise ValueError("Could not find header row in Maccor file")
         if units_row:
             # skip all the header rows, plus the row after the header (which contains units)
             skiprows = list(range(skiprows)) + [skiprows + 1]
