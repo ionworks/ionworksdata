@@ -1027,6 +1027,8 @@ def test_dataloader_from_db():
         data_loader = iwdata.DataLoader.from_db(
             "test-measurement-id-123", use_cache=False
         )
+        # Trigger lazy load by accessing data.
+        _ = data_loader.data
 
     mock_client.cell_measurement.detail.assert_called_once_with(
         "test-measurement-id-123"
@@ -1055,10 +1057,118 @@ def test_ocp_dataloader_from_db():
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         data_loader = iwdata.OCPDataLoader.from_db("test-ocp-id-456", use_cache=False)
+        # Trigger lazy load by accessing data.
+        _ = data_loader.data
 
     mock_client.cell_measurement.detail.assert_called_once_with("test-ocp-id-456")
     assert isinstance(data_loader, iwdata.DataLoader)
     assert data_loader._measurement_id == "test-ocp-id-456"  # noqa: SLF001
+
+
+def _make_mock_client(time_series, steps):
+    """Helper to build a mock Ionworks client for from_db lazy-loading tests."""
+    from unittest.mock import MagicMock
+
+    mock_measurement_detail = MagicMock()
+    mock_measurement_detail.time_series = time_series
+    mock_measurement_detail.steps = steps
+    mock_client = MagicMock()
+    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    return mock_client
+
+
+def _make_test_data():
+    """Minimal time-series and steps DataFrames for from_db tests."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2, 3],
+            "Voltage [V]": [3.8, 3.7, 3.6, 3.5],
+            "Current [A]": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Start index": [0],
+            "End index": [3],
+            "Start voltage [V]": [3.8],
+        }
+    )
+    return time_series, steps
+
+
+def test_dataloader_from_db_lazy_no_fetch_on_creation():
+    """DataLoader.from_db must not call the API at construction time."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        iwdata.DataLoader.from_db("test-id", use_cache=False)
+        mock_client.cell_measurement.detail.assert_not_called()
+
+
+def test_dataloader_from_db_lazy_to_config_no_fetch():
+    """to_config() on a lazy DataLoader must not trigger a DB fetch."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
+        config = dl.to_config()
+        mock_client.cell_measurement.detail.assert_not_called()
+
+    assert config == {"data": "db:test-id"}
+
+
+def test_dataloader_from_db_lazy_fetches_on_data_access():
+    """Accessing .data triggers exactly one DB fetch."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
+        _ = dl.data
+
+    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
+    assert isinstance(dl.data, pd.DataFrame)
+    assert dl._measurement_id == "test-id"  # noqa: SLF001
+
+
+def test_dataloader_from_db_lazy_fetches_on_steps_access():
+    """Accessing .steps before .data still loads everything in one fetch."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
+        _ = dl.steps
+
+    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
+    assert isinstance(dl.steps, pd.DataFrame)
+    assert isinstance(dl.data, pd.DataFrame)
+    assert dl._measurement_id == "test-id"  # noqa: SLF001
+
+
+def test_dataloader_from_db_lazy_single_fetch():
+    """Accessing both .data and .steps issues only one DB request."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
+        _ = dl.data
+        _ = dl.steps
+
+    mock_client.cell_measurement.detail.assert_called_once()
 
 
 def test_data_loader_to_config_with_db():
@@ -1616,8 +1726,9 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
     measurement_id = "test-cache-dataloader"
 
     with patch("ionworks.Ionworks", return_value=mock_client):
-        # First call should hit the API
+        # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.DataLoader.from_db(measurement_id)
+        _ = loader1.data
         assert mock_client.cell_measurement.detail.call_count == 1
 
     # Data should now be cached
@@ -1676,7 +1787,9 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         # Call with use_cache=False should bypass cache and hit API
+        # (lazy: fetch triggered by .data access)
         loader = iwdata.DataLoader.from_db(measurement_id, use_cache=False)
+        _ = loader.data
         assert mock_client.cell_measurement.detail.call_count == 1
 
     # Should have fresh data, not cached data
@@ -1706,8 +1819,9 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
     measurement_id = "test-cache-ocp-dataloader"
 
     with patch("ionworks.Ionworks", return_value=mock_client):
-        # First call should hit the API
+        # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.OCPDataLoader.from_db(measurement_id)
+        _ = loader1.data
         assert mock_client.cell_measurement.detail.call_count == 1
 
     # Data should now be cached

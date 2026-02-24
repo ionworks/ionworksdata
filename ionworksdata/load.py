@@ -334,29 +334,96 @@ class DataLoader(GenericDataLoader):
         steps: pd.DataFrame | pl.DataFrame | dict | None = None,
         **kwargs,
     ):
-        options = kwargs.pop("options", None) or {}
-        merged = {**options, **kwargs}
-
-        transforms = dict(merged.get("transforms") or {})
-        # Backward compat: top-level filters/interpolate migrate into transforms
-        if "filters" in merged and "filters" not in transforms:
-            transforms["filters"] = merged["filters"]
-        if "interpolate" in merged and "interpolate" not in transforms:
-            transforms["interpolate"] = merged["interpolate"]
-        self._transforms = transforms
+        options = {**(kwargs.pop("options", None) or {}), **kwargs}
         self._measurement_id = None
+        self._setup(time_series, steps, options)
 
-        if steps is not None:
-            data = self._init_with_steps(time_series, steps, merged)
+    # ------------------------------------------------------------------
+    # Data / steps properties (support lazy loading from DB)
+    # ------------------------------------------------------------------
+
+    @property
+    def data(self):
+        self._ensure_db_data_loaded()
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = value
+
+    @property
+    def steps(self):
+        self._ensure_db_data_loaded()
+        return self._steps
+
+    @steps.setter
+    def steps(self, value):
+        self._steps = value
+
+    def _ensure_db_data_loaded(self):
+        """Fetch and initialise data from the DB on first access (lazy loading)."""
+        if not getattr(self, "_lazy_db_pending", False):
+            return
+        self._lazy_db_pending = False
+        measurement_id = self._measurement_id
+        use_cache = self._lazy_use_cache
+        options = self._lazy_options
+
+        cached_data = None
+        if use_cache:
+            cached_data = _load_from_cache(measurement_id)
+
+        if cached_data is not None:
+            time_series = cached_data.get("time_series")
+            steps = cached_data.get("steps")
         else:
-            data = self._init_without_steps(time_series, merged)
+            from ionworks import Ionworks
 
-        super().__init__(data)
-        self._apply_transforms()
+            client = Ionworks()
+            measurement_detail = client.cell_measurement.detail(measurement_id)
+            time_series = measurement_detail.time_series
+            steps = getattr(measurement_detail, "steps", None)
+            cache_payload = {"time_series": time_series}
+            if steps is not None:
+                cache_payload["steps"] = steps
+            if use_cache:
+                _save_to_cache(measurement_id, cache_payload)
+
+        self._measurement_id = None
+        self._setup(time_series, steps, options)
+        # Restore the measurement_id that identifies the DB source.
+        self._measurement_id = measurement_id
 
     # ------------------------------------------------------------------
     # Initialization paths
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_options(options):
+        """Normalise a merged options dict and return derived attribute values."""
+        transforms = dict(options.get("transforms") or {})
+        # Backward compat: top-level filters/interpolate migrate into transforms
+        if "filters" in options and "filters" not in transforms:
+            transforms["filters"] = options["filters"]
+        if "interpolate" in options and "interpolate" not in transforms:
+            transforms["interpolate"] = options["interpolate"]
+        return {
+            "transforms": transforms,
+            "first_step": options.get("first_step"),
+            "last_step": options.get("last_step"),
+            "capacity_column": options.get("capacity_column"),
+        }
+
+    def _setup(self, time_series, steps, options):
+        """Set up data, steps, and transforms. Called from __init__ and lazy DB load."""
+        parsed = self._parse_options(options)
+        self._transforms = parsed["transforms"]
+        if steps is not None:
+            data = self._init_with_steps(time_series, steps, options)
+        else:
+            data = self._init_without_steps(time_series, options)
+        super().__init__(data)
+        self._apply_transforms()
 
     def _init_with_steps(self, time_series, steps, options):
         if isinstance(time_series, pl.DataFrame):
@@ -1110,30 +1177,24 @@ class DataLoader(GenericDataLoader):
         -------
         DataLoader
         """
-        cached_data = None
-        if use_cache:
-            cached_data = _load_from_cache(measurement_id)
-
-        if cached_data is not None:
-            time_series = cached_data.get("time_series")
-            steps = cached_data.get("steps")
-        else:
-            from ionworks import Ionworks
-
-            client = Ionworks()
-            measurement_detail = client.cell_measurement.detail(measurement_id)
-            time_series = measurement_detail.time_series
-            steps = getattr(measurement_detail, "steps", None)
-
-            cache_payload = {"time_series": time_series}
-            if steps is not None:
-                cache_payload["steps"] = steps
-            if use_cache:
-                _save_to_cache(measurement_id, cache_payload)
-
         options = options or {}
-        instance = cls(time_series, steps, **options)
+        instance = cls.__new__(cls)
+
+        # Parse the subset of options needed by to_config() /
+        # _build_options_for_config() before any data is loaded —
+        # uses _parse_options to stay in sync with __init__.
+        parsed = cls._parse_options(options)
+        instance._transforms = parsed["transforms"]  # noqa: SLF001
         instance._measurement_id = measurement_id  # noqa: SLF001
+        instance._first_step = parsed["first_step"]  # noqa: SLF001
+        instance._last_step = parsed["last_step"]  # noqa: SLF001
+        instance._capacity_column = parsed["capacity_column"]  # noqa: SLF001
+
+        # Lazy-load flags — data is fetched only when .data or .steps is accessed.
+        instance._lazy_db_pending = True  # noqa: SLF001
+        instance._lazy_use_cache = use_cache  # noqa: SLF001
+        instance._lazy_options = options  # noqa: SLF001
+
         return instance
 
     @classmethod
