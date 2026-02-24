@@ -336,23 +336,10 @@ class DataLoader(GenericDataLoader):
     ):
         options = kwargs.pop("options", None) or {}
         merged = {**options, **kwargs}
-
-        transforms = dict(merged.get("transforms") or {})
-        # Backward compat: top-level filters/interpolate migrate into transforms
-        if "filters" in merged and "filters" not in transforms:
-            transforms["filters"] = merged["filters"]
-        if "interpolate" in merged and "interpolate" not in transforms:
-            transforms["interpolate"] = merged["interpolate"]
-        self._transforms = transforms
+        parsed = self._parse_options(merged)
+        self._transforms = parsed["transforms"]
         self._measurement_id = None
-
-        if steps is not None:
-            data = self._init_with_steps(time_series, steps, merged)
-        else:
-            data = self._init_without_steps(time_series, merged)
-
-        super().__init__(data)
-        self._apply_transforms()
+        self._setup(time_series, steps, merged)
 
     # ------------------------------------------------------------------
     # Data / steps properties (support lazy loading from DB)
@@ -380,7 +367,6 @@ class DataLoader(GenericDataLoader):
         """Fetch and initialise data from the DB on first access (lazy loading)."""
         if not getattr(self, "_lazy_db_pending", False):
             return
-        # Clear the flag immediately to prevent re-entry during __init__ below.
         self._lazy_db_pending = False
         measurement_id = self._measurement_id
         use_cache = self._lazy_use_cache
@@ -406,14 +392,41 @@ class DataLoader(GenericDataLoader):
             if use_cache:
                 _save_to_cache(measurement_id, cache_payload)
 
-        # Re-initialise with real data (__init__ resets _measurement_id to None).
-        self.__init__(time_series, steps, **options)
+        parsed = self._parse_options(options)
+        self._transforms = parsed["transforms"]
+        self._measurement_id = None
+        self._setup(time_series, steps, options)
         # Restore the measurement_id that identifies the DB source.
         self._measurement_id = measurement_id
 
     # ------------------------------------------------------------------
     # Initialization paths
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_options(options):
+        """Normalise a merged options dict and return derived attribute values."""
+        transforms = dict(options.get("transforms") or {})
+        # Backward compat: top-level filters/interpolate migrate into transforms
+        if "filters" in options and "filters" not in transforms:
+            transforms["filters"] = options["filters"]
+        if "interpolate" in options and "interpolate" not in transforms:
+            transforms["interpolate"] = options["interpolate"]
+        return {
+            "transforms": transforms,
+            "first_step": options.get("first_step"),
+            "last_step": options.get("last_step"),
+            "capacity_column": options.get("capacity_column"),
+        }
+
+    def _setup(self, time_series, steps, options):
+        """Set up data, steps, and transforms. Called from __init__ and lazy DB load."""
+        if steps is not None:
+            data = self._init_with_steps(time_series, steps, options)
+        else:
+            data = self._init_without_steps(time_series, options)
+        super().__init__(data)
+        self._apply_transforms()
 
     def _init_with_steps(self, time_series, steps, options):
         if isinstance(time_series, pl.DataFrame):
@@ -1172,18 +1185,13 @@ class DataLoader(GenericDataLoader):
 
         # Parse the subset of options needed by to_config() /
         # _build_options_for_config() before any data is loaded —
-        # mirrors the logic in __init__.
-        merged = {**options}
-        transforms = dict(merged.get("transforms") or {})
-        if "filters" in merged and "filters" not in transforms:
-            transforms["filters"] = merged["filters"]
-        if "interpolate" in merged and "interpolate" not in transforms:
-            transforms["interpolate"] = merged["interpolate"]
-        instance._transforms = transforms  # noqa: SLF001
+        # uses _parse_options to stay in sync with __init__.
+        parsed = cls._parse_options(options)
+        instance._transforms = parsed["transforms"]  # noqa: SLF001
         instance._measurement_id = measurement_id  # noqa: SLF001
-        instance._first_step = merged.get("first_step")  # noqa: SLF001
-        instance._last_step = merged.get("last_step")  # noqa: SLF001
-        instance._capacity_column = merged.get("capacity_column")  # noqa: SLF001
+        instance._first_step = parsed["first_step"]  # noqa: SLF001
+        instance._last_step = parsed["last_step"]  # noqa: SLF001
+        instance._capacity_column = parsed["capacity_column"]  # noqa: SLF001
 
         # Lazy-load flags — data is fetched only when .data or .steps is accessed.
         instance._lazy_db_pending = True  # noqa: SLF001

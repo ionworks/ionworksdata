@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python:*)",
       "Bash(pre-commit run:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []
