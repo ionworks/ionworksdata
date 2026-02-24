@@ -314,7 +314,10 @@ class DataLoader(GenericDataLoader):
             - first_step_dict, last_step_dict : dict (deprecated)
 
         Always:
+
             - capacity_column : str
+                Name of the column in ``time_series`` to use as the capacity
+                axis (copied to ``"Capacity [A.h]"``).
             - transforms : dict with any of:
                 - gitt_to_ocp : bool
                 - sort : bool
@@ -459,14 +462,6 @@ class DataLoader(GenericDataLoader):
     @staticmethod
     def _alias_columns(data, capacity_column):
         """Resolve capacity column aliases on the DataFrame."""
-        potential_capacity_column_names = [
-            "Capacity [A.h]",
-            "Discharge capacity [A.h]",
-            "Charge capacity [A.h]",
-            "Capacity [mA.h.cm-2]",
-            "Discharge capacity [mA.h.cm-2]",
-            "Charge capacity [mA.h.cm-2]",
-        ]
         if capacity_column is not None:
             if capacity_column in data.columns:
                 data["Capacity [A.h]"] = data[capacity_column]
@@ -475,11 +470,6 @@ class DataLoader(GenericDataLoader):
                     f"Specified capacity_column '{capacity_column}' not found in data. "
                     f"Available columns: {list(data.columns)}"
                 )
-        elif "Capacity [A.h]" not in data.columns:
-            for column in potential_capacity_column_names:
-                if column in data.columns:
-                    data["Capacity [A.h]"] = data[column]
-                    break
         return data
 
     def set_processed_internal_state(
