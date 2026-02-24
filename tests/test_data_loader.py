@@ -1344,19 +1344,6 @@ def test_ocp_data_loader_capacity_column_explicit():
     )
 
 
-def test_ocp_data_loader_capacity_column_auto_detect():
-    """Test auto-detection of capacity column."""
-    data = pd.DataFrame(
-        {
-            "Voltage [V]": [4.0, 3.5, 3.0, 2.5],
-            "Discharge capacity [A.h]": [0.0, 0.1, 0.2, 0.3],
-        }
-    )
-    loader = iwdata.OCPDataLoader(data)
-    # Should auto-detect "Discharge capacity [A.h]" and alias it
-    assert "Capacity [A.h]" in loader.data.columns
-
-
 def test_ocp_data_loader_sort_option():
     """Test sort option for OCP data."""
     # Data with increasing voltage (wrong order for OCP)
@@ -1873,15 +1860,15 @@ def test_data_loader_without_steps_voltage_alias():
     assert "Voltage [V]" in loader.data.columns
 
 
-def test_data_loader_without_steps_capacity_alias():
-    """Test that capacity column aliasing works in no-steps mode."""
+def test_data_loader_without_steps_capacity_column():
+    """Test that explicit capacity_column works in no-steps mode."""
     data = pd.DataFrame(
         {
             "Discharge capacity [A.h]": [0.0, 0.1, 0.2],
             "Voltage [V]": [3.5, 3.6, 3.7],
         }
     )
-    loader = iwdata.DataLoader(data)
+    loader = iwdata.DataLoader(data, capacity_column="Discharge capacity [A.h]")
     assert "Capacity [A.h]" in loader.data.columns
 
 
