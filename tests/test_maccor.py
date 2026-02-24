@@ -90,6 +90,43 @@ def test_maccor_csv(tmp_path):
     )
 
 
+def test_maccor_csv_tab_separated(tmp_path):
+    """Maccor .csv file with tab-separated content (e.g. export from cycler)."""
+    with open(tmp_path / "maccor.csv", "w") as f:
+        f.write("Today's Date\tDate of Test:\t02/03/2026\n")
+        f.write(
+            "Rec#\tCycle P\tStep\tTest Time (sec)\tCurrent (A)\tVoltage (V)\tStatus\n"
+        )
+        f.write("1\t0\t1\t0.0\t2.0\t4.0\tD\n")
+        f.write("2\t0\t1\t1.0\t3.0\t3.0\tC\n")
+    df = iwdata.read.time_series(tmp_path / "maccor.csv", "maccor")
+    assert "Time [s]" in df.columns
+    assert "Current [A]" in df.columns
+    assert "Voltage [V]" in df.columns
+    assert "Step from cycler" in df.columns
+    assert len(df) == 2
+    assert df["Time [s]"][0] == 0.0 and df["Time [s]"][1] == 1.0
+    assert df["Voltage [V]"][0] == 4.0 and df["Voltage [V]"][1] == 3.0
+
+
+def test_maccor_csv_comma_separated(tmp_path):
+    """Maccor .csv file with comma-separated content and units row."""
+    with open(tmp_path / "maccor.csv", "w") as f:
+        f.write("Preamble line without Step\n")
+        f.write("Step,Test Time (sec),Current (A),Voltage (V),Cycle,Status\n")
+        f.write("s,A,V,V,,\n")  # units row
+        f.write("1,0.0,2.0,4.0,0,D\n")
+        f.write("2,1.0,3.0,3.0,0,C\n")
+    df = iwdata.read.time_series(tmp_path / "maccor.csv", "maccor")
+    assert "Time [s]" in df.columns
+    assert "Current [A]" in df.columns
+    assert "Voltage [V]" in df.columns
+    assert "Step from cycler" in df.columns
+    assert len(df) == 2
+    assert df["Time [s]"][0] == 0.0 and df["Time [s]"][1] == 1.0
+    assert df["Voltage [V]"][0] == 4.0 and df["Voltage [V]"][1] == 3.0
+
+
 def test_maccor_msg(tmp_path):
     test_data = pl.DataFrame(
         {

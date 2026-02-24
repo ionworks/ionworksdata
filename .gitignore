@@ -9,6 +9,7 @@ build
 _version.py
 _build
 .coverage
+.claude
 
 # Working directories for testing and development
 workspace
