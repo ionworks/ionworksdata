@@ -355,6 +355,63 @@ class DataLoader(GenericDataLoader):
         self._apply_transforms()
 
     # ------------------------------------------------------------------
+    # Data / steps properties (support lazy loading from DB)
+    # ------------------------------------------------------------------
+
+    @property
+    def data(self):
+        self._ensure_db_data_loaded()
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = value
+
+    @property
+    def steps(self):
+        self._ensure_db_data_loaded()
+        return self._steps
+
+    @steps.setter
+    def steps(self, value):
+        self._steps = value
+
+    def _ensure_db_data_loaded(self):
+        """Fetch and initialise data from the DB on first access (lazy loading)."""
+        if not getattr(self, "_lazy_db_pending", False):
+            return
+        # Clear the flag immediately to prevent re-entry during __init__ below.
+        self._lazy_db_pending = False
+        measurement_id = self._measurement_id
+        use_cache = self._lazy_use_cache
+        options = self._lazy_options
+
+        cached_data = None
+        if use_cache:
+            cached_data = _load_from_cache(measurement_id)
+
+        if cached_data is not None:
+            time_series = cached_data.get("time_series")
+            steps = cached_data.get("steps")
+        else:
+            from ionworks import Ionworks
+
+            client = Ionworks()
+            measurement_detail = client.cell_measurement.detail(measurement_id)
+            time_series = measurement_detail.time_series
+            steps = getattr(measurement_detail, "steps", None)
+            cache_payload = {"time_series": time_series}
+            if steps is not None:
+                cache_payload["steps"] = steps
+            if use_cache:
+                _save_to_cache(measurement_id, cache_payload)
+
+        # Re-initialise with real data (__init__ resets _measurement_id to None).
+        self.__init__(time_series, steps, **options)
+        # Restore the measurement_id that identifies the DB source.
+        self._measurement_id = measurement_id
+
+    # ------------------------------------------------------------------
     # Initialization paths
     # ------------------------------------------------------------------
 
@@ -1110,30 +1167,29 @@ class DataLoader(GenericDataLoader):
         -------
         DataLoader
         """
-        cached_data = None
-        if use_cache:
-            cached_data = _load_from_cache(measurement_id)
-
-        if cached_data is not None:
-            time_series = cached_data.get("time_series")
-            steps = cached_data.get("steps")
-        else:
-            from ionworks import Ionworks
-
-            client = Ionworks()
-            measurement_detail = client.cell_measurement.detail(measurement_id)
-            time_series = measurement_detail.time_series
-            steps = getattr(measurement_detail, "steps", None)
-
-            cache_payload = {"time_series": time_series}
-            if steps is not None:
-                cache_payload["steps"] = steps
-            if use_cache:
-                _save_to_cache(measurement_id, cache_payload)
-
         options = options or {}
-        instance = cls(time_series, steps, **options)
+        instance = cls.__new__(cls)
+
+        # Parse the subset of options needed by to_config() /
+        # _build_options_for_config() before any data is loaded —
+        # mirrors the logic in __init__.
+        merged = {**options}
+        transforms = dict(merged.get("transforms") or {})
+        if "filters" in merged and "filters" not in transforms:
+            transforms["filters"] = merged["filters"]
+        if "interpolate" in merged and "interpolate" not in transforms:
+            transforms["interpolate"] = merged["interpolate"]
+        instance._transforms = transforms  # noqa: SLF001
         instance._measurement_id = measurement_id  # noqa: SLF001
+        instance._first_step = merged.get("first_step")  # noqa: SLF001
+        instance._last_step = merged.get("last_step")  # noqa: SLF001
+        instance._capacity_column = merged.get("capacity_column")  # noqa: SLF001
+
+        # Lazy-load flags — data is fetched only when .data or .steps is accessed.
+        instance._lazy_db_pending = True  # noqa: SLF001
+        instance._lazy_use_cache = use_cache  # noqa: SLF001
+        instance._lazy_options = options  # noqa: SLF001
+
         return instance
 
     @classmethod
