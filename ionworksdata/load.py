@@ -367,6 +367,7 @@ class DataLoader(GenericDataLoader):
         measurement_id = self._measurement_id
         use_cache = self._lazy_use_cache
         options = self._lazy_options
+        timeout = getattr(self, "_lazy_timeout", None)
 
         cached_data = None
         if use_cache:
@@ -378,7 +379,7 @@ class DataLoader(GenericDataLoader):
         else:
             from ionworks import Ionworks
 
-            client = Ionworks()
+            client = Ionworks(timeout=timeout)
             measurement_detail = client.cell_measurement.detail(measurement_id)
             time_series = measurement_detail.time_series
             steps = getattr(measurement_detail, "steps", None)
@@ -1153,7 +1154,7 @@ class DataLoader(GenericDataLoader):
         return cls(time_series, steps, **options)
 
     @classmethod
-    def from_db(cls, measurement_id, options=None, use_cache=True):
+    def from_db(cls, measurement_id, options=None, use_cache=True, timeout=None):
         """
         Load data from the Ionworks database.
 
@@ -1167,6 +1168,8 @@ class DataLoader(GenericDataLoader):
             Options to pass to the DataLoader constructor.
         use_cache : bool, optional
             If True (default), use local file cache to avoid repeated API calls.
+        timeout : int | None, optional
+            Request timeout in seconds passed to the Ionworks client.
 
         Returns
         -------
@@ -1189,6 +1192,7 @@ class DataLoader(GenericDataLoader):
         instance._lazy_db_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
         instance._lazy_options = options  # noqa: SLF001
+        instance._lazy_timeout = timeout  # noqa: SLF001
 
         return instance
 
@@ -1272,10 +1276,12 @@ class OCPDataLoader(DataLoader):
         super().__init__(data, steps=None, **merged)
 
     @classmethod
-    def from_db(cls, measurement_id, options=None, use_cache=True):
+    def from_db(cls, measurement_id, options=None, use_cache=True, timeout=None):
         warnings.warn(
             "OCPDataLoader.from_db is deprecated. Use DataLoader.from_db instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return DataLoader.from_db(measurement_id, options=options, use_cache=use_cache)
+        return DataLoader.from_db(
+            measurement_id, options=options, use_cache=use_cache, timeout=timeout
+        )
