@@ -176,18 +176,40 @@ class GenericDataLoader:
         filters: dict | None = None,
         interpolate: float | np.ndarray | None = None,
     ):
-        # Convert to pandas for internal processing. This class's methods rely on:
-        # - pandas interpolation methods (e.g., df.interpolate())
-        # - scipy.interpolate functions that expect pandas DataFrames
-        # - Boolean indexing and filtering patterns optimized for pandas
-        # - Backward compatibility with existing user code that expects pandas interface
-        if isinstance(data, pl.DataFrame):
-            data = data.to_pandas()
-        self.data = data
+        # Store polars internally; pandas is built lazily on first .data access
+        if isinstance(data, pd.DataFrame):
+            self._data_pl = pl.from_pandas(data)
+        elif isinstance(data, pl.DataFrame):
+            self._data_pl = data
+        else:
+            self._data_pl = pl.DataFrame(data)
+        self._data_pd_cache = None
         if filters is not None:
-            self.data = self.filter_data(self.data, filters)
+            self._data_pl = self._filter_data_pl(self._data_pl, filters)
+            self._data_pd_cache = None
         if interpolate is not None:
-            self.data = self.interpolate_data(self.data, interpolate)
+            self._data_pl = self._interpolate_data_pl(self._data_pl, interpolate)
+            self._data_pd_cache = None
+
+    @property
+    def data(self):
+        if self._data_pd_cache is None:
+            self._data_pd_cache = self._data_pl.to_pandas()
+        return self._data_pd_cache
+
+    @data.setter
+    def data(self, value):
+        if isinstance(value, pl.DataFrame):
+            self._data_pl = value
+        elif isinstance(value, pd.DataFrame):
+            self._data_pl = pl.from_pandas(value)
+        else:
+            self._data_pl = pl.DataFrame(value)
+        self._data_pd_cache = None
+
+    @property
+    def data_pl(self) -> pl.DataFrame:
+        return self._data_pl
 
     def __getitem__(self, key: str) -> pd.Series:
         return self.data[key]
@@ -197,6 +219,48 @@ class GenericDataLoader:
             "Copy method not implemented for GenericDataLoader. "
             "This should be implemented in the subclass."
         )
+
+    @staticmethod
+    def _filter_data_pl(data: pl.DataFrame, filters: dict) -> pl.DataFrame:
+        """Filter a polars DataFrame using the specified filter functions."""
+        replacements = []
+        for variable, kwargs in filters.items():
+            match kwargs["filter_type"]:
+                case "savgol":
+                    filtered_values = savgol_filter(
+                        data[variable].to_numpy(), **kwargs["parameters"]
+                    )
+                    replacements.append(pl.Series(variable, filtered_values))
+                case _:
+                    raise ValueError(
+                        f"Unknown filter function: {kwargs['filter_type']}"
+                    )
+        if replacements:
+            data = data.with_columns(replacements)
+        return data
+
+    @staticmethod
+    def _interpolate_data_pl(
+        data: pl.DataFrame,
+        knots: float | np.ndarray,
+        x_column: str = "Time [s]",
+    ) -> pl.DataFrame:
+        """Interpolate a polars DataFrame using np.interp."""
+        if isinstance(knots, float):
+            x_min = data[x_column].min()
+            x_max = data[x_column].max()
+            knots = np.arange(x_min, x_max, knots)
+
+        x_values = data[x_column].to_numpy()
+        interpolated_data = {}
+        for col_name in data.columns:
+            if col_name == x_column:
+                continue
+            interpolated_data[col_name] = np.interp(
+                knots, x_values, data[col_name].to_numpy()
+            )
+        interpolated_data[x_column] = knots
+        return pl.DataFrame(interpolated_data)
 
     @staticmethod
     def filter_data(data: pd.DataFrame, filters: dict) -> pd.DataFrame:
@@ -259,9 +323,6 @@ class GenericDataLoader:
         pd.DataFrame
             The interpolated data.
         """
-        # Keep both pandas and Polars versions:
-        # - Polars for fast min/max aggregations
-        # - Pandas for scipy.interpolate functions which require pandas DataFrames
         if isinstance(data, pl.DataFrame):
             data_pl = data
             data_pd = data.to_pandas()
@@ -273,7 +334,6 @@ class GenericDataLoader:
             x_max = data_pl[x_column].max()
             knots = np.arange(x_min, x_max, knots)
 
-        # Interpolation still uses numpy (no Polars equivalent)
         interpolated_data = {}
         x_values = data_pd[x_column].values
         for variable in data_pd.columns:
@@ -344,20 +404,55 @@ class DataLoader(GenericDataLoader):
     @property
     def data(self):
         self._ensure_db_data_loaded()
-        return self._data
+        if self._data_pd_cache is None:
+            df = self._data_pl.to_pandas()
+            # Preserve the original row index offset from sliced time-series
+            offset = getattr(self, "_start_idx", 0) or 0
+            if offset > 0:
+                df.index = range(offset, offset + len(df))
+            self._data_pd_cache = df
+        return self._data_pd_cache
 
     @data.setter
     def data(self, value):
-        self._data = value
+        if isinstance(value, pl.DataFrame):
+            self._data_pl = value
+        elif isinstance(value, pd.DataFrame):
+            self._data_pl = pl.from_pandas(value)
+        else:
+            self._data_pl = pl.DataFrame(value)
+        self._data_pd_cache = None
+
+    @property
+    def data_pl(self) -> pl.DataFrame:
+        self._ensure_db_data_loaded()
+        return self._data_pl
 
     @property
     def steps(self):
         self._ensure_db_data_loaded()
-        return self._steps
+        if self._steps_pl is None:
+            return None
+        if self._steps_pd_cache is None:
+            self._steps_pd_cache = self._steps_pl.to_pandas()
+        return self._steps_pd_cache
 
     @steps.setter
     def steps(self, value):
-        self._steps = value
+        if value is None:
+            self._steps_pl = None
+        elif isinstance(value, pl.DataFrame):
+            self._steps_pl = value
+        elif isinstance(value, pd.DataFrame):
+            self._steps_pl = pl.from_pandas(value)
+        else:
+            self._steps_pl = pl.DataFrame(value)
+        self._steps_pd_cache = None
+
+    @property
+    def steps_pl(self) -> pl.DataFrame | None:
+        self._ensure_db_data_loaded()
+        return self._steps_pl
 
     def _ensure_db_data_loaded(self):
         """Fetch and initialise data from the DB on first access (lazy loading)."""
@@ -418,26 +513,33 @@ class DataLoader(GenericDataLoader):
         self._transforms = parsed["transforms"]
         capacity_column = parsed["capacity_column"]
         self._capacity_column = capacity_column
+        self._steps_pd_cache = None
         if steps is not None:
-            data = self._init_with_steps(time_series, steps, options)
+            data_pl = self._init_with_steps(time_series, steps, options)
         else:
-            data = self._init_without_steps(time_series, options)
-        data = self._alias_columns(data, capacity_column)
-        super().__init__(data)
+            data_pl = self._init_without_steps(time_series, options)
+        data_pl = self._alias_columns(data_pl, capacity_column)
+        super().__init__(data_pl)
         self._apply_transforms()
 
     def _init_with_steps(self, time_series, steps, options):
+        # Normalize inputs to polars
         if isinstance(time_series, pl.DataFrame):
-            time_series = time_series.to_pandas()
+            time_series_pl = time_series
+        elif isinstance(time_series, pd.DataFrame):
+            time_series_pl = pl.from_pandas(time_series)
         else:
-            time_series = pd.DataFrame(time_series)
+            time_series_pl = pl.DataFrame(time_series)
         if isinstance(steps, pl.DataFrame):
-            steps = steps.to_pandas()
+            steps_pl = steps
+        elif isinstance(steps, pd.DataFrame):
+            steps_pl = pl.from_pandas(steps)
         else:
-            steps = pd.DataFrame(steps)
+            steps_pl = pl.DataFrame(steps)
 
-        self._original_time_series = time_series.copy()
-        self._original_steps = steps.copy()
+        # Polars DataFrames are immutable so no .copy() needed
+        self._original_time_series_pl = time_series_pl
+        self._original_steps_pl = steps_pl
 
         first_step = options.get("first_step")
         last_step = options.get("last_step")
@@ -467,39 +569,46 @@ class DataLoader(GenericDataLoader):
         self._first_step = first_step
         self._last_step = last_step
 
-        first_step_idx = self._get_step(first_step, steps, first=True)
-        last_step_idx = self._get_step(last_step, steps, first=False)
+        first_step_idx = self._get_step(first_step, steps_pl, first=True)
+        last_step_idx = self._get_step(last_step, steps_pl, first=False)
 
-        steps_pl = pl.from_pandas(steps)
-        self.steps = steps_pl.slice(
+        sliced_steps_pl = steps_pl.slice(
             first_step_idx, last_step_idx - first_step_idx + 1
-        ).to_pandas()
+        )
+        self._steps_pl = sliced_steps_pl
+        self._steps_pd_cache = None
 
         if first_step_idx == 0:
-            self.initial_voltage = self.steps.iloc[0]["Start voltage [V]"]
+            self.initial_voltage = sliced_steps_pl["Start voltage [V]"][0]
         else:
-            self.initial_voltage = steps.iloc[first_step_idx - 1]["End voltage [V]"]
+            self.initial_voltage = steps_pl["End voltage [V]"][first_step_idx - 1]
 
-        start_idx = int(self.steps["Start index"].iloc[0])
-        end_idx = int(self.steps["End index"].iloc[-1]) + 1
+        start_idx = int(sliced_steps_pl["Start index"][0])
+        end_idx = int(sliced_steps_pl["End index"][-1]) + 1
         self._start_idx = start_idx
         self._end_idx = end_idx
 
-        return time_series.iloc[start_idx:end_idx]
+        return time_series_pl.slice(start_idx, end_idx - start_idx)
 
     def _init_without_steps(self, time_series, options):
+        # Normalize to polars
         if isinstance(time_series, dict):
-            time_series = pd.DataFrame(time_series)
-        if isinstance(time_series, pl.DataFrame):
-            time_series = time_series.to_pandas()
+            time_series_pl = pl.DataFrame(time_series)
+        elif isinstance(time_series, pd.DataFrame):
+            time_series_pl = pl.from_pandas(time_series)
+        elif isinstance(time_series, pl.DataFrame):
+            time_series_pl = time_series
+        else:
+            time_series_pl = pl.DataFrame(time_series)
 
-        self.steps = None
-        self._original_time_series = None
-        self._original_steps = None
+        self._steps_pl = None
+        self._steps_pd_cache = None
+        self._original_time_series_pl = None
+        self._original_steps_pl = None
         self._first_step = None
         self._last_step = None
         self._start_idx = 0
-        self._end_idx = len(time_series)
+        self._end_idx = time_series_pl.height
         self.initial_voltage = None
 
         # Voltage column aliasing
@@ -510,10 +619,12 @@ class DataLoader(GenericDataLoader):
             "Open-circuit potential [V]",
             "Open-circuit voltage [V]",
         ]
-        if "Voltage [V]" not in time_series.columns:
+        if "Voltage [V]" not in time_series_pl.columns:
             for column in potential_ocp_column_names:
-                if column in time_series.columns:
-                    time_series["Voltage [V]"] = time_series[column]
+                if column in time_series_pl.columns:
+                    time_series_pl = time_series_pl.with_columns(
+                        pl.col(column).alias("Voltage [V]")
+                    )
                     break
             else:
                 raise ValueError(
@@ -521,14 +632,16 @@ class DataLoader(GenericDataLoader):
                     + ", ".join(potential_ocp_column_names)
                 )
 
-        return time_series
+        return time_series_pl
 
     @staticmethod
-    def _alias_columns(data, capacity_column):
+    def _alias_columns(data: pl.DataFrame, capacity_column) -> pl.DataFrame:
         """Resolve capacity column aliases on the DataFrame."""
         if capacity_column is not None:
             if capacity_column in data.columns:
-                data["Capacity [A.h]"] = data[capacity_column]
+                data = data.with_columns(
+                    pl.col(capacity_column).alias("Capacity [A.h]")
+                )
             else:
                 raise ValueError(
                     f"Specified capacity_column '{capacity_column}' not found in data. "
@@ -553,8 +666,8 @@ class DataLoader(GenericDataLoader):
         self._capacity_column = capacity_column
         self._first_step = first_step
         self._last_step = last_step
-        self._original_time_series = original_time_series
-        self._original_steps = original_steps
+        self._original_time_series_pl = original_time_series
+        self._original_steps_pl = original_steps
 
     # ------------------------------------------------------------------
     # Transforms
@@ -565,33 +678,39 @@ class DataLoader(GenericDataLoader):
         if transforms.get("gitt_to_ocp"):
             self._transform_gitt_to_ocp()
         if transforms.get("sort"):
-            self.data = self._sort_capacity_and_ocp(self.data)
+            self._data_pl = self._sort_capacity_and_ocp(self._data_pl)
+            self._data_pd_cache = None
         if transforms.get("remove_duplicates"):
-            self.data = self._remove_duplicate_ocp(self.data)
+            self._data_pl = self._remove_duplicate_ocp(self._data_pl)
+            self._data_pd_cache = None
         if transforms.get("remove_extremes"):
-            self.data = self._remove_ocp_extremes(self.data)
+            self._data_pl = self._remove_ocp_extremes(self._data_pl)
+            self._data_pd_cache = None
         filters = transforms.get("filters")
         if filters:
-            self.data = self.filter_data(self.data, filters)
+            self._data_pl = self._filter_data_pl(self._data_pl, filters)
+            self._data_pd_cache = None
         interpolate = transforms.get("interpolate")
         if interpolate is not None:
-            self.data = self.interpolate_data(self.data, interpolate)
+            self._data_pl = self._interpolate_data_pl(self._data_pl, interpolate)
+            self._data_pd_cache = None
 
     def _transform_gitt_to_ocp(self):
         """Extract OCP from GITT rest steps: take the last data point of each rest."""
-        if self.steps is None:
+        if self._steps_pl is None:
             raise ValueError("gitt_to_ocp requires steps data")
 
-        gitt_rest = self.steps[
-            (self.steps["Label"] == "GITT") & (self.steps["Step type"] == "Rest")
-        ]
-        if len(gitt_rest) == 0:
+        gitt_rest = self._steps_pl.filter(
+            (pl.col("Label") == "GITT") & (pl.col("Step type") == "Rest")
+        )
+        if gitt_rest.height == 0:
             raise ValueError("No GITT rest steps found in data")
 
         ocp_points = []
-        for _, step in gitt_rest.iterrows():
-            end_idx = int(step["End index"]) - self._start_idx
-            row = self.data.iloc[end_idx]
+        data_pl = self._data_pl
+        for step_row in gitt_rest.iter_rows(named=True):
+            end_idx = int(step_row["End index"]) - self._start_idx
+            row = data_pl.row(end_idx, named=True)
             discharge = row.get("Discharge capacity [A.h]", 0)
             charge = row.get("Charge capacity [A.h]", 0)
             capacity = abs(discharge - charge)
@@ -602,28 +721,32 @@ class DataLoader(GenericDataLoader):
                 }
             )
 
-        ocp_df = pd.DataFrame(ocp_points)
-        ocp_df = ocp_df.sort_values("Capacity [A.h]").reset_index(drop=True)
-        ocp_df["Capacity [A.h]"] -= ocp_df["Capacity [A.h]"].iloc[0]
+        ocp_df = pl.DataFrame(ocp_points).sort("Capacity [A.h]")
+        first_cap = ocp_df["Capacity [A.h]"][0]
+        ocp_df = ocp_df.with_columns(
+            (pl.col("Capacity [A.h]") - first_cap).alias("Capacity [A.h]")
+        )
 
-        self.data = ocp_df
-        self.steps = None
+        self._data_pl = ocp_df
+        self._data_pd_cache = None
+        self._steps_pl = None
+        self._steps_pd_cache = None
 
     @staticmethod
-    def _remove_duplicate_ocp(data, capacity_column_name="Capacity [A.h]"):
+    def _remove_duplicate_ocp(data: pl.DataFrame, capacity_column_name="Capacity [A.h]") -> pl.DataFrame:
         """Remove any duplicate capacity and voltage values."""
-        data = data.drop_duplicates(subset=[capacity_column_name])
-        data = data.drop_duplicates(subset=["Voltage [V]"])
+        data = data.unique(subset=[capacity_column_name], maintain_order=True)
+        data = data.unique(subset=["Voltage [V]"], maintain_order=True)
         return data
 
     @staticmethod
-    def _sort_capacity_and_ocp(data):
+    def _sort_capacity_and_ocp(data: pl.DataFrame) -> pl.DataFrame:
         """Sort OCP data so voltage is decreasing and capacity is increasing."""
-        V = data["Voltage [V]"].values
+        V = data["Voltage [V]"].to_numpy()
         if V[-1] > V[0]:
-            data = data.iloc[::-1].reset_index(drop=True)
+            data = data.reverse()
 
-        capacity_column_names = [col for col in data if col.startswith("Capacity [")]
+        capacity_column_names = [col for col in data.columns if col.startswith("Capacity [")]
         if len(capacity_column_names) == 0:
             raise ValueError("No capacity column found")
         elif len(capacity_column_names) > 1:
@@ -632,24 +755,24 @@ class DataLoader(GenericDataLoader):
             )
         capacity_column_name = capacity_column_names[0]
 
-        Q = data[capacity_column_name].values
+        Q = data[capacity_column_name].to_numpy().copy()
         if Q[0] > Q[-1]:
             Q = Q.max() - Q
         Q -= Q.min()
-        data[capacity_column_name] = Q
+        data = data.with_columns(pl.Series(capacity_column_name, Q))
 
         data = DataLoader._remove_duplicate_ocp(data, capacity_column_name)
         return data
 
     @staticmethod
-    def _remove_ocp_extremes(data):
+    def _remove_ocp_extremes(data: pl.DataFrame) -> pl.DataFrame:
         """Remove data at extremes where the second derivative of voltage vs
         capacity is zero."""
-        q = data["Capacity [A.h]"].values
-        U = data["Voltage [V]"].values
+        q = data["Capacity [A.h]"].to_numpy()
+        U = data["Voltage [V]"].to_numpy()
         d2UdQ2 = np.gradient(np.gradient(U, q), q)
         first_positive, last_positive = np.where(abs(d2UdQ2) > 1e-10)[0][[0, -1]]
-        return data.iloc[first_positive : last_positive + 1]
+        return data.slice(first_positive, last_positive - first_positive + 1)
 
     # ------------------------------------------------------------------
     # Differential cutoff methods
@@ -681,8 +804,8 @@ class DataLoader(GenericDataLoader):
         float
             Cut-off for dUdQ
         """
-        q = self.data["Capacity [A.h]"]
-        U = self.data["Voltage [V]"]
+        q = self._data_pl["Capacity [A.h]"].to_numpy()
+        U = self._data_pl["Voltage [V]"].to_numpy()
         dUdQ = abs(np.gradient(U, q))
         return self._calculate_differential_cutoff(
             q, U, dUdQ, method, show_plot, "Capacity [A.h]", "Voltage [V]", options
@@ -714,8 +837,8 @@ class DataLoader(GenericDataLoader):
         float
             Cut-off for dQdU
         """
-        U = self.data["Voltage [V]"]
-        q = self.data["Capacity [A.h]"]
+        U = self._data_pl["Voltage [V]"].to_numpy()
+        q = self._data_pl["Capacity [A.h]"].to_numpy()
         dQdU = abs(np.gradient(q, U))
         return self._calculate_differential_cutoff(
             U, q, dQdU, method, show_plot, "Voltage [V]", "Capacity [A.h]", options
@@ -867,8 +990,8 @@ class DataLoader(GenericDataLoader):
                 config["options"] = opts
             return config
 
-        if self.steps is None:
-            config = {"data": self.data.to_dict(orient="list")}
+        if self._steps_pl is None:
+            config = {"data": self._data_pl.to_dict(as_series=False)}
             opts = self._build_options_for_config()
             if opts:
                 config["options"] = opts
@@ -876,33 +999,35 @@ class DataLoader(GenericDataLoader):
 
         # With-steps path
         if filter_data:
-            time_series_reset = self.data.reset_index(drop=True)
-            steps_reset = self.steps.copy()
-            if len(steps_reset) > 0:
-                original_start = int(steps_reset["Start index"].iloc[0])
-                steps_reset["Start index"] -= original_start
-                steps_reset["End index"] -= original_start
+            time_series_pl = self._data_pl
+            steps_pl = self._steps_pl
+            if steps_pl.height > 0:
+                original_start = steps_pl["Start index"][0]
+                steps_pl = steps_pl.with_columns([
+                    (pl.col("Start index") - original_start).alias("Start index"),
+                    (pl.col("End index") - original_start).alias("End index"),
+                ])
             config = {
                 "data": {
-                    "time_series": time_series_reset.to_dict(orient="list"),
-                    "steps": steps_reset.to_dict(orient="list"),
+                    "time_series": time_series_pl.to_dict(as_series=False),
+                    "steps": steps_pl.to_dict(as_series=False),
                 },
             }
         else:
-            if self._original_time_series is not None:
+            if self._original_time_series_pl is not None:
                 config = {
                     "data": {
-                        "time_series": self._original_time_series.to_dict(
-                            orient="list"
+                        "time_series": self._original_time_series_pl.to_dict(
+                            as_series=False
                         ),
-                        "steps": self._original_steps.to_dict(orient="list"),
+                        "steps": self._original_steps_pl.to_dict(as_series=False),
                     },
                 }
             else:
                 config = {
                     "data": {
-                        "time_series": self.data.to_dict(orient="list"),
-                        "steps": self.steps.to_dict(orient="list"),
+                        "time_series": self._data_pl.to_dict(as_series=False),
+                        "steps": self._steps_pl.to_dict(as_series=False),
                     },
                 }
 
@@ -1026,28 +1151,28 @@ class DataLoader(GenericDataLoader):
 
     def generate_experiment(self, use_cv: bool = False) -> pybamm.Experiment:
         """Generate a PyBaMM experiment from the loaded step information."""
-        if self.steps is None:
+        if self._steps_pl is None:
             raise ValueError("generate_experiment requires steps data")
         steps = []
-        for _, step in self.steps.iterrows():
-            duration = step["Duration [s]"]
-            step_type = step["Step type"]
+        for step_row in self._steps_pl.iter_rows(named=True):
+            duration = step_row["Duration [s]"]
+            step_type = step_row["Step type"]
             if duration <= np.nextafter(0, 1):
                 continue
             match step_type:
                 case "Constant current discharge" | "Constant current charge":
-                    mean_current = step["Mean current [A]"]
+                    mean_current = step_row["Mean current [A]"]
                     step = pybamm.step.Current(mean_current, duration=duration)
                 case "Constant voltage discharge" | "Constant voltage charge":
                     if use_cv:
-                        mean_voltage = step["Mean voltage [V]"]
+                        mean_voltage = step_row["Mean voltage [V]"]
                         step = pybamm.step.Voltage(mean_voltage, duration=duration)
                     else:
-                        step = self._create_current_interpolant_step(step, duration)
+                        step = self._create_current_interpolant_step(step_row, duration)
                 case "Rest":
                     step = pybamm.step.Current(0, duration=duration)
                 case "Constant power discharge" | "Constant power charge":
-                    mean_power = step["Mean power [W]"]
+                    mean_power = step_row["Mean power [W]"]
                     step = pybamm.step.Power(mean_power, duration=duration)
                 case "EIS":
                     raise NotImplementedError(
@@ -1059,29 +1184,29 @@ class DataLoader(GenericDataLoader):
                         f"Unknown step type: {step_type}, "
                         "falling back to current interpolant",
                     )
-                    step = self._create_current_interpolant_step(step, duration)
+                    step = self._create_current_interpolant_step(step_row, duration)
             steps.append(step)
         return pybamm.Experiment(steps)
 
     def generate_interpolant(self) -> pybamm.Interpolant:
         """Generate a PyBaMM interpolant from the loaded step information."""
-        if self.steps is None:
+        if self._steps_pl is None:
             raise ValueError("generate_interpolant requires steps data")
         ts = []
         cs = []
-        for _, step in self.steps.iterrows():
+        for step_row in self._steps_pl.iter_rows(named=True):
             if (
-                "constant current" in step["Step type"].lower()
-                or step["Step type"] == "Rest"
+                "constant current" in step_row["Step type"].lower()
+                or step_row["Step type"] == "Rest"
             ):
-                first_t = step["Start time [s]"]
-                last_t = step["End time [s]"]
+                first_t = step_row["Start time [s]"]
+                last_t = step_row["End time [s]"]
                 ts.append(np.array([first_t, last_t]))
                 cs.append(
-                    np.array([step["Mean current [A]"], step["Mean current [A]"]])
+                    np.array([step_row["Mean current [A]"], step_row["Mean current [A]"]])
                 )
             else:
-                times, currents = self._get_times_and_currents(step)
+                times, currents = self._get_times_and_currents(step_row)
                 ts.append(times)
                 cs.append(currents)
         ts = np.concatenate(ts)
@@ -1092,11 +1217,12 @@ class DataLoader(GenericDataLoader):
     def plot_data(self, show: bool = False) -> tuple[plt.Figure, plt.Axes]:
         """Plot voltage vs time data from the loaded experiment."""
         fig, ax = plt.subplots(3, 1, sharex=True)
-        ax[0].plot(self.data["Time [s]"], self.data["Voltage [V]"])
+        time = self._data_pl["Time [s]"].to_numpy()
+        ax[0].plot(time, self._data_pl["Voltage [V]"].to_numpy())
         ax[0].set_ylabel("Voltage [V]")
-        ax[1].plot(self.data["Time [s]"], self.data["Current [A]"])
+        ax[1].plot(time, self._data_pl["Current [A]"].to_numpy())
         ax[1].set_ylabel("Current [A]")
-        ax[2].plot(self.data["Time [s]"], self.data["Temperature [degC]"])
+        ax[2].plot(time, self._data_pl["Temperature [degC]"].to_numpy())
         ax[2].set_xlabel("Time [s]")
         ax[2].set_ylabel("Temperature [degC]")
         if show:
@@ -1106,8 +1232,9 @@ class DataLoader(GenericDataLoader):
     def _get_times_and_currents(self, step):
         start_idx = int(step["Start index"]) - self._start_idx
         end_idx = int(step["End index"]) + 1 - self._start_idx
-        current = self.data["Current [A]"].iloc[start_idx:end_idx].array
-        time = self.data["Time [s]"].iloc[start_idx:end_idx].array
+        length = end_idx - start_idx
+        current = self._data_pl["Current [A]"].slice(start_idx, length).to_numpy()
+        time = self._data_pl["Time [s]"].slice(start_idx, length).to_numpy()
         return time, current
 
     def _create_current_interpolant_step(self, step, duration):
@@ -1185,6 +1312,12 @@ class DataLoader(GenericDataLoader):
         instance._last_step = parsed["last_step"]  # noqa: SLF001
         instance._capacity_column = parsed["capacity_column"]  # noqa: SLF001
 
+        # Initialize polars storage attributes (populated by _setup on lazy load)
+        instance._data_pl = None  # noqa: SLF001
+        instance._data_pd_cache = None  # noqa: SLF001
+        instance._steps_pl = None  # noqa: SLF001
+        instance._steps_pd_cache = None  # noqa: SLF001
+
         # Lazy-load flags — data is fetched only when .data or .steps is accessed.
         instance._lazy_db_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
@@ -1222,23 +1355,37 @@ class DataLoader(GenericDataLoader):
         DataLoader
         """
         instance = cls.__new__(cls)
-        instance.data = data.copy()
-        if steps is not None:
-            instance.steps = steps.copy()
+        # Accept both pandas and polars; store as polars internally
+        if isinstance(data, pl.DataFrame):
+            instance._data_pl = data.clone()
+        elif isinstance(data, pd.DataFrame):
+            instance._data_pl = pl.from_pandas(data)
         else:
-            instance.steps = None
+            instance._data_pl = pl.DataFrame(data)
+        instance._data_pd_cache = None
+        if steps is not None:
+            if isinstance(steps, pl.DataFrame):
+                instance._steps_pl = steps.clone()
+            elif isinstance(steps, pd.DataFrame):
+                instance._steps_pl = pl.from_pandas(steps)
+            else:
+                instance._steps_pl = pl.DataFrame(steps)
+        else:
+            instance._steps_pl = None
+        instance._steps_pd_cache = None
         instance.initial_voltage = initial_voltage
         instance.start_idx = start_idx
         instance.end_idx = end_idx
         instance.set_processed_internal_state()
-        super(DataLoader, instance).__init__(instance.data)
+        # Call GenericDataLoader.__init__ with polars data
+        super(DataLoader, instance).__init__(instance._data_pl)
         return instance
 
     def copy(self) -> DataLoader:
         """Create a copy of the DataLoader instance."""
         return DataLoader.from_processed_data(
-            data=self.data.copy(),
-            steps=self.steps.copy() if self.steps is not None else None,
+            data=self._data_pl.clone(),
+            steps=self._steps_pl.clone() if self._steps_pl is not None else None,
             initial_voltage=self.initial_voltage,
             start_idx=self._start_idx,
             end_idx=self._end_idx,

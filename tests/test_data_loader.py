@@ -2052,3 +2052,128 @@ def test_ocpdataloader_deprecation_warning():
     )
     with pytest.warns(DeprecationWarning, match="OCPDataLoader is deprecated"):
         iwdata.OCPDataLoader(data)
+
+
+# =============================================================================
+# Polars-internal storage tests
+# =============================================================================
+
+
+def test_data_pl_property_with_steps():
+    """Test that data_pl returns a polars DataFrame."""
+    import polars as pl
+
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+    assert isinstance(loader.data_pl, pl.DataFrame)
+    assert loader.data_pl.height == len(loader.data)
+    assert loader.data_pl.columns == list(loader.data.columns)
+
+
+def test_steps_pl_property():
+    """Test that steps_pl returns a polars DataFrame."""
+    import polars as pl
+
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+    assert isinstance(loader.steps_pl, pl.DataFrame)
+    assert loader.steps_pl.height == len(loader.steps)
+    assert loader.steps_pl.columns == list(loader.steps.columns)
+
+
+def test_steps_pl_none_without_steps():
+    """Test that steps_pl is None when no steps are loaded."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    loader = iwdata.DataLoader(data)
+    assert loader.steps_pl is None
+    assert loader.steps is None
+
+
+def test_no_pandas_conversion_during_init():
+    """Test that _data_pd_cache is None after init (no eager pandas conversion)."""
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+    # Before accessing .data, the pandas cache should be None
+    assert loader._data_pd_cache is None  # noqa: SLF001
+    assert loader._steps_pd_cache is None  # noqa: SLF001
+
+    # Accessing .data populates the cache
+    _ = loader.data
+    assert loader._data_pd_cache is not None  # noqa: SLF001
+
+
+def test_pandas_cache_invalidation_on_data_set():
+    """Test that setting .data invalidates the pandas cache."""
+    import polars as pl
+
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+    # Access data to populate cache
+    _ = loader.data
+    assert loader._data_pd_cache is not None  # noqa: SLF001
+
+    # Set new data (polars)
+    new_data = pl.DataFrame(
+        {"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]}
+    )
+    loader.data = new_data
+    assert loader._data_pd_cache is None  # noqa: SLF001
+
+    # Accessing .data rebuilds cache
+    result = loader.data
+    assert len(result) == 2
+
+
+def test_polars_input_preserved_without_conversion():
+    """Test that polars input stays in polars internally."""
+    import polars as pl
+
+    ts = pl.read_csv(
+        "tests/test_data/cccv-synthetic-with-steps/time_series.csv"
+    )
+    steps = pl.read_csv(
+        "tests/test_data/cccv-synthetic-with-steps/steps.csv"
+    )
+
+    loader = iwdata.DataLoader(ts, steps)
+
+    # Internal storage is polars
+    assert isinstance(loader._data_pl, pl.DataFrame)  # noqa: SLF001
+    assert isinstance(loader._steps_pl, pl.DataFrame)  # noqa: SLF001
+
+    # No pandas cache built yet
+    assert loader._data_pd_cache is None  # noqa: SLF001
+    assert loader._steps_pd_cache is None  # noqa: SLF001
+
+    # Public API still returns pandas
+    assert isinstance(loader.data, pd.DataFrame)
+    assert isinstance(loader.steps, pd.DataFrame)
+
+
+def test_generic_data_loader_data_pl():
+    """Test GenericDataLoader.data_pl property."""
+    import polars as pl
+    from ionworksdata.load import GenericDataLoader
+
+    data = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2],
+            "Voltage [V]": [3.0, 3.1, 3.2],
+        }
+    )
+    loader = GenericDataLoader(data)
+    assert isinstance(loader.data_pl, pl.DataFrame)
+    assert loader.data_pl.height == 3
