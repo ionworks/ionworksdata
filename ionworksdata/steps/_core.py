@@ -70,13 +70,20 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
 
     step_column = "Step count"
 
-    # Ensure required columns
+    # Ensure required columns (need at least one of Time [s] or Capacity [A.h],
+    # e.g. OCP data may have Capacity [A.h] and Voltage [V] only)
     if step_column not in time_series_pl.columns:
         raise KeyError(f"Missing required step column: {step_column}")
-    if "Time [s]" not in time_series_pl.columns:
-        raise KeyError("Missing required column: 'Time [s]'")
+    has_time = "Time [s]" in time_series_pl.columns
+    has_capacity = "Capacity [A.h]" in time_series_pl.columns
+    if not has_time and not has_capacity:
+        raise KeyError("Need at least one of 'Time [s]' or 'Capacity [A.h]'")
     if "Voltage [V]" not in time_series_pl.columns:
         raise KeyError("Missing required column: 'Voltage [V]'")
+
+    # Current required by set_capacity and Power; use 1.0 so single Capacity = discharge
+    if "Current [A]" not in time_series_pl.columns:
+        time_series_pl = time_series_pl.with_columns(pl.lit(1.0).alias("Current [A]"))
 
     # Ensure capacity present
     time_series_pl = iwdata.transform.set_capacity(time_series_pl)
@@ -123,13 +130,19 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
             pl.lit(0).cast(pl.Int64).alias("__cycle_cumsum")
         )
 
-    # Aggregate per step group
-    agg = time_series_pl.group_by("__step_group").agg(
+    # Aggregate per step group (time-derived cols are null when Time [s] not present)
+    agg_exprs = [
+        pl.col("__row_id").min().alias("Start index"),
+        pl.col("__row_id").max().alias("End index"),
+        pl.col("Time [s]").first().alias("Start time [s]")
+        if has_time
+        else pl.lit(None).cast(pl.Float64).alias("Start time [s]"),
+        pl.col("Time [s]").last().alias("End time [s]")
+        if has_time
+        else pl.lit(None).cast(pl.Float64).alias("End time [s]"),
+    ]
+    agg_exprs.extend(
         [
-            pl.col("__row_id").min().alias("Start index"),
-            pl.col("__row_id").max().alias("End index"),
-            pl.col("Time [s]").first().alias("Start time [s]"),
-            pl.col("Time [s]").last().alias("End time [s]"),
             pl.col("Voltage [V]").first().alias("Start voltage [V]"),
             pl.col("Voltage [V]").last().alias("End voltage [V]"),
             (
@@ -185,14 +198,18 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
             else pl.lit(None).alias("Cycle from cycler"),
         ]
     )
+    agg = time_series_pl.group_by("__step_group").agg(agg_exprs)
 
     # Order by start index and assign step count
     agg = agg.sort("Start index")
 
-    # Duration
-    agg = agg.with_columns(
-        (pl.col("End time [s]") - pl.col("Start time [s]")).alias("Duration [s]")
-    )
+    # Duration (null when Time [s] was not present, so DB gets explicit NULL)
+    if has_time:
+        agg = agg.with_columns(
+            (pl.col("End time [s]") - pl.col("Start time [s]")).alias("Duration [s]")
+        )
+    else:
+        agg = agg.with_columns(pl.lit(None).cast(pl.Float64).alias("Duration [s]"))
 
     # Step type inference using thresholds from global settings
     current_tol = iwdata.settings.get_current_std_tol()

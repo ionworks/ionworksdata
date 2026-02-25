@@ -563,3 +563,28 @@ def test_step_energy_always_positive():
         assert all(steps4["Discharge energy [W.h]"] >= 0)
     if "Charge energy [W.h]" in steps4.columns:
         assert all(steps4["Charge energy [W.h]"] >= 0)
+
+
+def test_summarize_ocp_capacity_only():
+    """Test summarize on OCP-style data that has only Capacity [A.h] and Voltage [V] (no Time [s])."""
+    # OCP data from e.g. gitt_to_ocp has Capacity [A.h] and Voltage [V] only
+    ocp_data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Voltage [V]": [3.5, 3.45, 3.40, 3.35, 3.30],
+            "Step count": [0, 0, 0, 0, 0],
+        }
+    )
+    steps = iwdata.steps.summarize(ocp_data)
+    assert len(steps) == 1
+    assert steps["Start index"].to_list() == [0]
+    assert steps["End index"].to_list() == [4]
+    assert steps["Discharge capacity [A.h]"].to_list() == [0.2]  # 0.20 - 0.0
+    assert steps["Charge capacity [A.h]"].to_list() == [0.0]
+    # Time-derived columns present as null when Time [s] not in input (DB gets NULL)
+    assert "Start time [s]" in steps.columns
+    assert "End time [s]" in steps.columns
+    assert "Duration [s]" in steps.columns
+    assert steps["Start time [s]"].null_count() == 1
+    assert steps["End time [s]"].null_count() == 1
+    assert steps["Duration [s]"].null_count() == 1
