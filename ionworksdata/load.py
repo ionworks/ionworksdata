@@ -257,7 +257,13 @@ class GenericDataLoader:
         Returns
         -------
         pd.DataFrame
-            The interpolated data.
+            The interpolated data. Only numeric columns (plus the x-axis column)
+            are included; object/string columns are omitted.
+
+        Notes
+        -----
+        Only numeric columns are interpolated. Non-numeric (e.g. object or
+        string) columns are skipped and do not appear in the returned DataFrame.
         """
         # Keep both pandas and Polars versions:
         # - Polars for fast min/max aggregations
@@ -273,12 +279,15 @@ class GenericDataLoader:
             x_max = data_pl[x_column].max()
             knots = np.arange(x_min, x_max, knots)
 
-        # Interpolation still uses numpy (no Polars equivalent)
+        # Interpolate only numeric columns; np.interp fails on object dtype
         interpolated_data = {}
         x_values = data_pd[x_column].values
-        for variable in data_pd.columns:
-            if variable == x_column:
-                continue
+        numeric_cols = [
+            c
+            for c in data_pd.columns
+            if c != x_column and pd.api.types.is_numeric_dtype(data_pd[c])
+        ]
+        for variable in numeric_cols:
             interpolated_data[variable] = np.interp(
                 knots, x_values, data_pd[variable].values
             )
@@ -401,11 +410,18 @@ class DataLoader(GenericDataLoader):
     def _parse_options(options):
         """Normalise a merged options dict and return derived attribute values."""
         transforms = dict(options.get("transforms") or {})
-        # Backward compat: top-level filters/interpolate migrate into transforms
-        if "filters" in options and "filters" not in transforms:
-            transforms["filters"] = options["filters"]
-        if "interpolate" in options and "interpolate" not in transforms:
-            transforms["interpolate"] = options["interpolate"]
+        # Backward compat: top-level transform keys migrate into transforms
+        # (so from_db(options={"gitt_to_ocp": True, "sort": True}) applies them)
+        for key in (
+            "gitt_to_ocp",
+            "sort",
+            "remove_duplicates",
+            "remove_extremes",
+            "filters",
+            "interpolate",
+        ):
+            if key in options and key not in transforms:
+                transforms[key] = options[key]
         return {
             "transforms": transforms,
             "first_step": options.get("first_step"),
@@ -605,6 +621,7 @@ class DataLoader(GenericDataLoader):
 
         ocp_df = pd.DataFrame(ocp_points)
         ocp_df = ocp_df.sort_values("Capacity [A.h]").reset_index(drop=True)
+        ocp_df["Capacity [A.h]"] = ocp_df["Capacity [A.h]"].cumsum()
         ocp_df["Capacity [A.h]"] -= ocp_df["Capacity [A.h]"].iloc[0]
 
         self.data = ocp_df

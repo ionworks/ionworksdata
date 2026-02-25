@@ -182,6 +182,73 @@ def test_interpolate_data():
     )
 
 
+def test_interpolate_downsample_fixed_interval():
+    """interpolate with a float downsamples (or upsamples) to a fixed regular time interval."""
+    # Dense irregular time series (many points, uneven spacing)
+    rng = np.random.default_rng(42)
+    n_raw = 200
+    t_raw = np.sort(rng.uniform(0, 10, size=n_raw))
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": t_raw,
+            "Voltage [V]": 3.5 + 0.1 * np.sin(t_raw),
+            "Current [A]": np.ones(n_raw),
+        }
+    )
+    steps = pd.DataFrame(
+        {"Start index": [0], "End index": [n_raw - 1], "Start voltage [V]": [3.5]}
+    )
+
+    # Downsample to regular 1.0 s interval (fewer points)
+    interval = 1.0
+    loader = iwdata.DataLoader(time_series, steps, interpolate=interval)
+    t = loader.data["Time [s]"].values
+
+    # Fixed regular interval: all steps equal to interval (within float tolerance)
+    dt = np.diff(t)
+    assert dt.size > 0
+    np.testing.assert_allclose(dt, interval, atol=1e-10)
+    # Downsampling: fewer points than raw
+    assert len(loader.data) < n_raw
+    # Time range preserved (starts at min, ends before max as in np.arange)
+    assert t[0] == time_series["Time [s]"].min()
+    assert t[-1] < time_series["Time [s]"].max()
+    assert t[-1] >= time_series["Time [s]"].max() - interval
+
+    # Interpolated values match np.interp on the same knots
+    expected_v = np.interp(
+        t, time_series["Time [s]"].values, time_series["Voltage [V]"].values
+    )
+    np.testing.assert_allclose(loader.data["Voltage [V]"].values, expected_v)
+
+
+def test_interpolate_data_skips_object_columns():
+    """interpolate_data skips object-dtype columns and does not raise."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": np.linspace(0, 1000, 101),
+            "Voltage [V]": 3.5 - 0.001 * np.linspace(0, 1000, 101),
+            "Current [A]": np.ones(101),
+            "Label": ["step_1"] * 50 + ["step_2"] * 51,
+        }
+    )
+    result = iwdata.DataLoader.interpolate_data(time_series, 10.0)
+    assert "Time [s]" in result.columns
+    assert "Voltage [V]" in result.columns
+    assert "Current [A]" in result.columns
+    assert "Label" not in result.columns
+    np.testing.assert_allclose(
+        result["Voltage [V]"].values,
+        np.interp(
+            result["Time [s]"].values,
+            time_series["Time [s]"].values,
+            time_series["Voltage [V]"].values,
+        ),
+    )
+    dt = np.diff(result["Time [s]"].values)
+    np.testing.assert_allclose(dt, 10.0, atol=1e-10)
+
+
 def test_get_step():
     data_loader_full = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps"), {}
@@ -1171,6 +1238,183 @@ def test_dataloader_from_db_lazy_single_fetch():
     mock_client.cell_measurement.detail.assert_called_once()
 
 
+def test_from_db_interpolate_transform_applied():
+    """from_db with options.transforms.interpolate resamples .data to regular interval."""
+    from unittest.mock import patch
+
+    # Dense irregular time series so interpolate=1.0 downsamples
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 0.2, 0.5, 1.0, 1.3, 2.0, 2.1, 3.0],
+            "Voltage [V]": [3.8, 3.78, 3.75, 3.7, 3.68, 3.6, 3.58, 3.5],
+            "Current [A]": [1.0] * 8,
+        }
+    )
+    steps = pd.DataFrame(
+        {"Start index": [0], "End index": [7], "Start voltage [V]": [3.8]}
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"transforms": {"interpolate": 1.0}},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    dt = np.diff(loader.data["Time [s]"].values)
+    assert len(dt) > 0
+    np.testing.assert_allclose(dt, 1.0, atol=1e-10)
+    assert len(loader.data) <= len(time_series)
+
+
+def test_from_db_top_level_gitt_to_ocp_applied():
+    """from_db with top-level gitt_to_ocp (no 'transforms' nesting) applies transform and yields Capacity [A.h]."""
+    from unittest.mock import patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.01,
+                0.02,
+                0.03,
+                0.03,
+                0.03,
+                0.03,
+                0.04,
+                0.05,
+                0.06,
+                0.06,
+                0.06,
+                0.06,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+        }
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"gitt_to_ocp": True},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    assert "Capacity [A.h]" in loader.data.columns
+    assert "Voltage [V]" in loader.data.columns
+    assert len(loader.data) == 2
+    assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+    np.testing.assert_array_almost_equal(
+        loader.data["Voltage [V]"].values, [3.62, 3.32]
+    )
+
+
+def test_from_db_top_level_sort_and_gitt_to_ocp():
+    """from_db with top-level sort and gitt_to_ocp applies both transforms."""
+    from unittest.mock import patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.01,
+                0.02,
+                0.03,
+                0.03,
+                0.03,
+                0.03,
+                0.04,
+                0.05,
+                0.06,
+                0.06,
+                0.06,
+                0.06,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+        }
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"gitt_to_ocp": True, "sort": True},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    assert "Capacity [A.h]" in loader.data.columns
+    assert len(loader.data) == 2
+    assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+
+
 def test_data_loader_to_config_with_db():
     """Test DataLoader to_config returns db format when loaded from database."""
     from unittest.mock import MagicMock, patch
@@ -2024,6 +2268,58 @@ def test_gitt_to_ocp_transform():
         loader.data["Voltage [V]"].values, [3.62, 3.32]
     )
     assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+
+
+def test_gitt_to_ocp_capacity_cumulative():
+    """GITT-to-OCP capacity column is cumulative across rows."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(18)),
+            "Voltage [V]": [3.8, 3.7, 3.65, 3.60, 3.61, 3.62]
+            + [3.5, 3.4, 3.35, 3.30, 3.31, 3.32]
+            + [3.2, 3.1, 3.05, 3.00, 3.01, 3.02],
+            "Current [A]": ([-1] * 3 + [0] * 3) * 3,
+            # Rest-end capacities 0.06, 0.15, 0.15 -> sort, cumsum, subtract first -> 0, 0.15, 0.30
+            "Discharge capacity [A.h]": (
+                [0.01, 0.02, 0.06, 0.06, 0.06, 0.06]  # step 0, 1 (rest end=0.06)
+                + [0.01, 0.02, 0.03, 0.10, 0.15, 0.15]  # step 2, 3 (rest end=0.15)
+                + [0.01, 0.02, 0.03, 0.10, 0.15, 0.15]  # step 4, 5 (rest end=0.15)
+            ),
+            "Charge capacity [A.h]": [0.0] * 18,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3, 4, 5],
+            "Start index": [0, 3, 6, 9, 12, 15],
+            "End index": [2, 5, 8, 11, 14, 17],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30, 3.2, 3.00],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32, 3.05, 3.02],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT"] * 6,
+            "Group number": [0, 0, 1, 1, 2, 2],
+        }
+    )
+
+    loader = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True}},
+    )
+
+    cap = loader.data["Capacity [A.h]"].values
+    # Capacity is normalized to start at 0, then cumulative (non-decreasing)
+    assert cap[0] == 0.0
+    assert np.all(np.diff(cap) >= -1e-12)
+    # Per-rest 0.06, 0.15, 0.15 -> cumsum 0.06, 0.21, 0.36 -> subtract first: 0, 0.15, 0.30
+    np.testing.assert_allclose(cap, [0.0, 0.15, 0.30], atol=1e-9)
 
 
 def test_gitt_to_ocp_requires_steps():
