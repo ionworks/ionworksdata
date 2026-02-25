@@ -66,6 +66,23 @@ def label_cycling(
         raise ValueError("cell_metadata is required")
     Q = cell_metadata["Nominal cell capacity [A.h]"]
 
+    # Require capacity columns with no nulls; otherwise do not apply labels
+    if (
+        "Discharge capacity [A.h]" not in steps.columns
+        or "Charge capacity [A.h]" not in steps.columns
+    ):
+        logger.warning(
+            "Cycling labeling requires 'Discharge capacity [A.h]' and 'Charge capacity [A.h]'; "
+            "skipping labels."
+        )
+        return steps
+    if (
+        steps["Discharge capacity [A.h]"].isna().any()
+        or steps["Charge capacity [A.h]"].isna().any()
+    ):
+        logger.warning("Cycling labeling requires non-null capacity; skipping labels.")
+        return steps
+
     # Filter by total capacity (sum of discharge and charge for each step)
     discharge_cap = steps["Discharge capacity [A.h]"].abs()
     charge_cap = steps["Charge capacity [A.h]"].abs()

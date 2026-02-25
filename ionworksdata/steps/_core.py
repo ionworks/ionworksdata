@@ -94,6 +94,12 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
     if has_capacity:
         time_series_pl = iwdata.transform.set_capacity(time_series_pl)
 
+    # Compute step capacity aggs when we have Discharge/Charge columns (from set_capacity here or upstream)
+    has_capacity_cols = (
+        "Discharge capacity [A.h]" in time_series_pl.columns
+        and "Charge capacity [A.h]" in time_series_pl.columns
+    )
+
     # Ensure frequency column exists (fill with zeros if not present)
     if "Frequency [Hz]" not in time_series_pl.columns:
         time_series_pl = time_series_pl.with_columns(
@@ -158,7 +164,7 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
                 - pl.col("Charge capacity [A.h]").first()
             ).alias("Charge capacity [A.h]"),
         ]
-        if has_capacity
+        if has_capacity_cols
         else [
             pl.lit(None).cast(pl.Float64).alias("Discharge capacity [A.h]"),
             pl.lit(None).cast(pl.Float64).alias("Charge capacity [A.h]"),
