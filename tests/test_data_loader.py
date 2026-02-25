@@ -2125,9 +2125,7 @@ def test_pandas_cache_invalidation_on_data_set():
     assert loader._data_pd_cache is not None  # noqa: SLF001
 
     # Set new data (polars)
-    new_data = pl.DataFrame(
-        {"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]}
-    )
+    new_data = pl.DataFrame({"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]})
     loader.data = new_data
     assert loader._data_pd_cache is None  # noqa: SLF001
 
@@ -2140,12 +2138,8 @@ def test_polars_input_preserved_without_conversion():
     """Test that polars input stays in polars internally."""
     import polars as pl
 
-    ts = pl.read_csv(
-        "tests/test_data/cccv-synthetic-with-steps/time_series.csv"
-    )
-    steps = pl.read_csv(
-        "tests/test_data/cccv-synthetic-with-steps/steps.csv"
-    )
+    ts = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/time_series.csv")
+    steps = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/steps.csv")
 
     loader = iwdata.DataLoader(ts, steps)
 
@@ -2162,7 +2156,7 @@ def test_polars_input_preserved_without_conversion():
     assert isinstance(loader.steps, pd.DataFrame)
 
 
-def test_generic_data_loader_data_pl():
+def test_dataloader_data_pl_no_steps():
     """Test DataLoader.data_pl property."""
     import polars as pl
 

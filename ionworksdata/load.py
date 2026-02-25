@@ -612,14 +612,28 @@ class DataLoader:
         original_time_series=None,
         original_steps=None,
     ):
-        """Set internal state when constructing from processed data. Used by from_processed_data."""
+        """Set internal state when constructing from processed data. Used by from_processed_data.
+
+        original_time_series and original_steps may be pandas or Polars DataFrames (or None);
+        they are stored as Polars internally for config export.
+        """
         self._transforms = transforms if transforms is not None else {}
         self._measurement_id = measurement_id
         self._capacity_column = capacity_column
         self._first_step = first_step
         self._last_step = last_step
-        self._original_time_series_pl = original_time_series
-        self._original_steps_pl = original_steps
+        if original_time_series is None:
+            self._original_time_series_pl = None
+        elif isinstance(original_time_series, pd.DataFrame):
+            self._original_time_series_pl = pl.from_pandas(original_time_series)
+        else:
+            self._original_time_series_pl = original_time_series
+        if original_steps is None:
+            self._original_steps_pl = None
+        elif isinstance(original_steps, pd.DataFrame):
+            self._original_steps_pl = pl.from_pandas(original_steps)
+        else:
+            self._original_steps_pl = original_steps
 
     # ------------------------------------------------------------------
     # Transforms
@@ -685,7 +699,9 @@ class DataLoader:
         self._steps_pd_cache = None
 
     @staticmethod
-    def _remove_duplicate_ocp(data: pl.DataFrame, capacity_column_name="Capacity [A.h]") -> pl.DataFrame:
+    def _remove_duplicate_ocp(
+        data: pl.DataFrame, capacity_column_name="Capacity [A.h]"
+    ) -> pl.DataFrame:
         """Remove any duplicate capacity and voltage values."""
         data = data.unique(subset=[capacity_column_name], maintain_order=True)
         data = data.unique(subset=["Voltage [V]"], maintain_order=True)
@@ -698,7 +714,9 @@ class DataLoader:
         if V[-1] > V[0]:
             data = data.reverse()
 
-        capacity_column_names = [col for col in data.columns if col.startswith("Capacity [")]
+        capacity_column_names = [
+            col for col in data.columns if col.startswith("Capacity [")
+        ]
         if len(capacity_column_names) == 0:
             raise ValueError("No capacity column found")
         elif len(capacity_column_names) > 1:
@@ -955,10 +973,12 @@ class DataLoader:
             steps_pl = self._steps_pl
             if steps_pl.height > 0:
                 original_start = steps_pl["Start index"][0]
-                steps_pl = steps_pl.with_columns([
-                    (pl.col("Start index") - original_start).alias("Start index"),
-                    (pl.col("End index") - original_start).alias("End index"),
-                ])
+                steps_pl = steps_pl.with_columns(
+                    [
+                        (pl.col("Start index") - original_start).alias("Start index"),
+                        (pl.col("End index") - original_start).alias("End index"),
+                    ]
+                )
             config = {
                 "data": {
                     "time_series": time_series_pl.to_dict(as_series=False),
@@ -1155,7 +1175,9 @@ class DataLoader:
                 last_t = step_row["End time [s]"]
                 ts.append(np.array([first_t, last_t]))
                 cs.append(
-                    np.array([step_row["Mean current [A]"], step_row["Mean current [A]"]])
+                    np.array(
+                        [step_row["Mean current [A]"], step_row["Mean current [A]"]]
+                    )
                 )
             else:
                 times, currents = self._get_times_and_currents(step_row)
@@ -1309,27 +1331,27 @@ class DataLoader:
         instance = cls.__new__(cls)
         # Accept both pandas and polars; store as polars internally
         if isinstance(data, pl.DataFrame):
-            instance._data_pl = data.clone()
+            instance._data_pl = data.clone()  # noqa: SLF001
         elif isinstance(data, pd.DataFrame):
-            instance._data_pl = pl.from_pandas(data)
+            instance._data_pl = pl.from_pandas(data)  # noqa: SLF001
         else:
-            instance._data_pl = pl.DataFrame(data)
-        instance._data_pd_cache = None
+            instance._data_pl = pl.DataFrame(data)  # noqa: SLF001
+        instance._data_pd_cache = None  # noqa: SLF001
         if steps is not None:
             if isinstance(steps, pl.DataFrame):
-                instance._steps_pl = steps.clone()
+                instance._steps_pl = steps.clone()  # noqa: SLF001
             elif isinstance(steps, pd.DataFrame):
-                instance._steps_pl = pl.from_pandas(steps)
+                instance._steps_pl = pl.from_pandas(steps)  # noqa: SLF001
             else:
-                instance._steps_pl = pl.DataFrame(steps)
+                instance._steps_pl = pl.DataFrame(steps)  # noqa: SLF001
         else:
-            instance._steps_pl = None
-        instance._steps_pd_cache = None
+            instance._steps_pl = None  # noqa: SLF001
+        instance._steps_pd_cache = None  # noqa: SLF001
         instance.initial_voltage = initial_voltage
         instance.start_idx = start_idx
         instance.end_idx = end_idx
         instance.set_processed_internal_state()
-        instance._data_pd_cache = None
+        instance._data_pd_cache = None  # noqa: SLF001
         return instance
 
     def copy(self) -> DataLoader:
