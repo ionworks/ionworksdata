@@ -70,14 +70,19 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
 
     step_column = "Step count"
 
-    # Ensure required columns (need at least one of Time [s] or Capacity [A.h],
-    # e.g. OCP data may have Capacity [A.h] and Voltage [V] only)
+    # Require at least one x-axis: Time, Capacity, Stoichiometry, or SOC
     if step_column not in time_series_pl.columns:
         raise KeyError(f"Missing required step column: {step_column}")
     has_time = "Time [s]" in time_series_pl.columns
     has_capacity = "Capacity [A.h]" in time_series_pl.columns
-    if not has_time and not has_capacity:
-        raise KeyError("Need at least one of 'Time [s]' or 'Capacity [A.h]'")
+    has_stoich = "Stoichiometry" in time_series_pl.columns
+    has_soc = "SOC" in time_series_pl.columns
+    has_x_axis = has_time or has_capacity or has_stoich or has_soc
+    if not has_x_axis:
+        raise KeyError(
+            "Need at least one of 'Time [s]', 'Capacity [A.h]', "
+            "'Stoichiometry', or 'SOC'"
+        )
     if "Voltage [V]" not in time_series_pl.columns:
         raise KeyError("Missing required column: 'Voltage [V]'")
 
@@ -85,8 +90,9 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
     if "Current [A]" not in time_series_pl.columns:
         time_series_pl = time_series_pl.with_columns(pl.lit(1.0).alias("Current [A]"))
 
-    # Ensure capacity present
-    time_series_pl = iwdata.transform.set_capacity(time_series_pl)
+    # Ensure capacity-derived columns present only when Capacity [A.h] exists
+    if has_capacity:
+        time_series_pl = iwdata.transform.set_capacity(time_series_pl)
 
     # Ensure frequency column exists (fill with zeros if not present)
     if "Frequency [Hz]" not in time_series_pl.columns:
@@ -141,10 +147,8 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
         if has_time
         else pl.lit(None).cast(pl.Float64).alias("End time [s]"),
     ]
-    agg_exprs.extend(
+    capacity_aggs = (
         [
-            pl.col("Voltage [V]").first().alias("Start voltage [V]"),
-            pl.col("Voltage [V]").last().alias("End voltage [V]"),
             (
                 pl.col("Discharge capacity [A.h]").last()
                 - pl.col("Discharge capacity [A.h]").first()
@@ -153,6 +157,18 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
                 pl.col("Charge capacity [A.h]").last()
                 - pl.col("Charge capacity [A.h]").first()
             ).alias("Charge capacity [A.h]"),
+        ]
+        if has_capacity
+        else [
+            pl.lit(None).cast(pl.Float64).alias("Discharge capacity [A.h]"),
+            pl.lit(None).cast(pl.Float64).alias("Charge capacity [A.h]"),
+        ]
+    )
+    agg_exprs.extend(
+        [
+            pl.col("Voltage [V]").first().alias("Start voltage [V]"),
+            pl.col("Voltage [V]").last().alias("End voltage [V]"),
+            *capacity_aggs,
             (
                 pl.col("Discharge energy [W.h]").last()
                 - pl.col("Discharge energy [W.h]").first()
