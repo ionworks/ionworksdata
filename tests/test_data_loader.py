@@ -917,9 +917,8 @@ def test_ocp_dataloader_with_polars():
 
 
 def test_generic_dataloader_with_polars():
-    """Test GenericDataLoader with Polars input."""
+    """Test DataLoader with Polars input (no-steps mode)."""
     import polars as pl
-    from ionworksdata.load import GenericDataLoader
 
     data_pd = pd.DataFrame(
         {
@@ -931,8 +930,8 @@ def test_generic_dataloader_with_polars():
     data_pl = pl.from_pandas(data_pd)
 
     # Create loaders with both types
-    loader_pandas = GenericDataLoader(data_pd)
-    loader_polars = GenericDataLoader(data_pl)
+    loader_pandas = iwdata.DataLoader(data_pd)
+    loader_polars = iwdata.DataLoader(data_pl)
 
     # Results should be identical
     pd.testing.assert_frame_equal(loader_pandas.data, loader_polars.data)
@@ -2164,9 +2163,8 @@ def test_polars_input_preserved_without_conversion():
 
 
 def test_generic_data_loader_data_pl():
-    """Test GenericDataLoader.data_pl property."""
+    """Test DataLoader.data_pl property."""
     import polars as pl
-    from ionworksdata.load import GenericDataLoader
 
     data = pd.DataFrame(
         {
@@ -2174,6 +2172,6 @@ def test_generic_data_loader_data_pl():
             "Voltage [V]": [3.0, 3.1, 3.2],
         }
     )
-    loader = GenericDataLoader(data)
+    loader = iwdata.DataLoader(data)
     assert isinstance(loader.data_pl, pl.DataFrame)
     assert loader.data_pl.height == 3

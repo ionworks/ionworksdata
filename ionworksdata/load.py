@@ -169,32 +169,71 @@ def last_step_from_cycle(cycle: int) -> str:
     return f'SELECT * FROM steps WHERE "Cycle count" = {cycle} ORDER BY "Step count" DESC LIMIT 1'
 
 
-class GenericDataLoader:
+class DataLoader:
+    """
+    Unified data loader for time-series and OCP data.
+
+    Handles two modes:
+
+    - **With steps**: loads time-series data with step information for
+      simulation, experiment generation, etc.
+    - **Without steps**: loads simple tabular data (e.g. OCP curves with
+      Capacity and Voltage columns).
+
+    Post-load preprocessing is configured via the ``transforms`` dict option.
+
+    Parameters
+    ----------
+    time_series : pd.DataFrame | pl.DataFrame | dict
+        The data to load. Can be a Pandas/Polars DataFrame or a dict.
+    steps : pd.DataFrame | pl.DataFrame | dict | None, optional
+        Step information. When None, the loader operates in simple (no-steps) mode.
+    ``**kwargs``
+        Options passed directly or via an ``options`` dict. Supported keys:
+
+        When steps are provided:
+
+            - first_step, last_step : str | int
+            - first_step_dict, last_step_dict : dict (deprecated)
+
+        Always:
+
+            - capacity_column : str
+                Name of the column in ``time_series`` to use as the capacity
+                axis (copied to ``"Capacity [A.h]"``).
+            - transforms : dict with any of:
+                - gitt_to_ocp : bool
+                - sort : bool
+                - remove_duplicates : bool
+                - remove_extremes : bool
+                - filters : dict
+                - interpolate : float | np.ndarray
+    """
+
     def __init__(
         self,
-        data: pd.DataFrame | pl.DataFrame,
-        filters: dict | None = None,
-        interpolate: float | np.ndarray | None = None,
+        time_series: pd.DataFrame | pl.DataFrame | dict,
+        steps: pd.DataFrame | pl.DataFrame | dict | None = None,
+        **kwargs,
     ):
-        # Store polars internally; pandas is built lazily on first .data access
-        if isinstance(data, pd.DataFrame):
-            self._data_pl = pl.from_pandas(data)
-        elif isinstance(data, pl.DataFrame):
-            self._data_pl = data
-        else:
-            self._data_pl = pl.DataFrame(data)
-        self._data_pd_cache = None
-        if filters is not None:
-            self._data_pl = self._filter_data_pl(self._data_pl, filters)
-            self._data_pd_cache = None
-        if interpolate is not None:
-            self._data_pl = self._interpolate_data_pl(self._data_pl, interpolate)
-            self._data_pd_cache = None
+        options = {**(kwargs.pop("options", None) or {}), **kwargs}
+        self._measurement_id = None
+        self._setup(time_series, steps, options)
+
+    # ------------------------------------------------------------------
+    # Data / steps properties (support lazy loading from DB)
+    # ------------------------------------------------------------------
 
     @property
     def data(self):
+        self._ensure_db_data_loaded()
         if self._data_pd_cache is None:
-            self._data_pd_cache = self._data_pl.to_pandas()
+            df = self._data_pl.to_pandas()
+            # Preserve the original row index offset from sliced time-series
+            offset = getattr(self, "_start_idx", 0) or 0
+            if offset > 0:
+                df.index = range(offset, offset + len(df))
+            self._data_pd_cache = df
         return self._data_pd_cache
 
     @data.setter
@@ -209,16 +248,11 @@ class GenericDataLoader:
 
     @property
     def data_pl(self) -> pl.DataFrame:
+        self._ensure_db_data_loaded()
         return self._data_pl
 
     def __getitem__(self, key: str) -> pd.Series:
         return self.data[key]
-
-    def copy(self) -> GenericDataLoader:
-        raise NotImplementedError(
-            "Copy method not implemented for GenericDataLoader. "
-            "This should be implemented in the subclass."
-        )
 
     @staticmethod
     def _filter_data_pl(data: pl.DataFrame, filters: dict) -> pl.DataFrame:
@@ -345,89 +379,6 @@ class GenericDataLoader:
         interpolated_data[x_column] = knots
         return pd.DataFrame(interpolated_data)
 
-
-class DataLoader(GenericDataLoader):
-    """
-    Unified data loader for time-series and OCP data.
-
-    Handles two modes:
-
-    - **With steps**: loads time-series data with step information for
-      simulation, experiment generation, etc.
-    - **Without steps**: loads simple tabular data (e.g. OCP curves with
-      Capacity and Voltage columns).
-
-    Post-load preprocessing is configured via the ``transforms`` dict option.
-
-    Parameters
-    ----------
-    time_series : pd.DataFrame | pl.DataFrame | dict
-        The data to load. Can be a Pandas/Polars DataFrame or a dict.
-    steps : pd.DataFrame | pl.DataFrame | dict | None, optional
-        Step information. When None, the loader operates in simple (no-steps) mode.
-    ``**kwargs``
-        Options passed directly or via an ``options`` dict. Supported keys:
-
-        When steps are provided:
-
-            - first_step, last_step : str | int
-            - first_step_dict, last_step_dict : dict (deprecated)
-
-        Always:
-
-            - capacity_column : str
-                Name of the column in ``time_series`` to use as the capacity
-                axis (copied to ``"Capacity [A.h]"``).
-            - transforms : dict with any of:
-                - gitt_to_ocp : bool
-                - sort : bool
-                - remove_duplicates : bool
-                - remove_extremes : bool
-                - filters : dict
-                - interpolate : float | np.ndarray
-    """
-
-    def __init__(
-        self,
-        time_series: pd.DataFrame | pl.DataFrame | dict,
-        steps: pd.DataFrame | pl.DataFrame | dict | None = None,
-        **kwargs,
-    ):
-        options = {**(kwargs.pop("options", None) or {}), **kwargs}
-        self._measurement_id = None
-        self._setup(time_series, steps, options)
-
-    # ------------------------------------------------------------------
-    # Data / steps properties (support lazy loading from DB)
-    # ------------------------------------------------------------------
-
-    @property
-    def data(self):
-        self._ensure_db_data_loaded()
-        if self._data_pd_cache is None:
-            df = self._data_pl.to_pandas()
-            # Preserve the original row index offset from sliced time-series
-            offset = getattr(self, "_start_idx", 0) or 0
-            if offset > 0:
-                df.index = range(offset, offset + len(df))
-            self._data_pd_cache = df
-        return self._data_pd_cache
-
-    @data.setter
-    def data(self, value):
-        if isinstance(value, pl.DataFrame):
-            self._data_pl = value
-        elif isinstance(value, pd.DataFrame):
-            self._data_pl = pl.from_pandas(value)
-        else:
-            self._data_pl = pl.DataFrame(value)
-        self._data_pd_cache = None
-
-    @property
-    def data_pl(self) -> pl.DataFrame:
-        self._ensure_db_data_loaded()
-        return self._data_pl
-
     @property
     def steps(self):
         self._ensure_db_data_loaded()
@@ -519,7 +470,8 @@ class DataLoader(GenericDataLoader):
         else:
             data_pl = self._init_without_steps(time_series, options)
         data_pl = self._alias_columns(data_pl, capacity_column)
-        super().__init__(data_pl)
+        self._data_pl = data_pl
+        self._data_pd_cache = None
         self._apply_transforms()
 
     def _init_with_steps(self, time_series, steps, options):
@@ -1377,8 +1329,7 @@ class DataLoader(GenericDataLoader):
         instance.start_idx = start_idx
         instance.end_idx = end_idx
         instance.set_processed_internal_state()
-        # Call GenericDataLoader.__init__ with polars data
-        super(DataLoader, instance).__init__(instance._data_pl)
+        instance._data_pd_cache = None
         return instance
 
     def copy(self) -> DataLoader:
