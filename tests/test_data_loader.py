@@ -913,9 +913,14 @@ def test_from_local_with_polars():
     assert loader_pandas.data.shape == loader_polars.data.shape
     assert loader_pandas.steps.shape == loader_polars.steps.shape
 
-    # Check that key columns have the same values
+    # Check that key columns have the same values (use tolerance for float differences
+    # between pl.read_csv and pd.read_csv)
     for col in ["Time [s]", "Voltage [V]", "Current [A]"]:
-        assert loader_pandas.data[col].equals(loader_polars.data[col])
+        np.testing.assert_allclose(
+            loader_pandas.data[col].to_numpy(),
+            loader_polars.data[col].to_numpy(),
+            err_msg=f"Column {col} differs",
+        )
 
 
 def test_ocp_dataloader_with_polars():
