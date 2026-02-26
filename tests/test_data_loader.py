@@ -2527,13 +2527,13 @@ def test_gitt_to_ocp_capacity_cumulative():
             + [3.5, 3.4, 3.35, 3.30, 3.31, 3.32]
             + [3.2, 3.1, 3.05, 3.00, 3.01, 3.02],
             "Current [A]": ([-1] * 3 + [0] * 3) * 3,
-            # Capacity resets per step: step 0 adds 0.06, step 2 adds 0.09, step 4 adds 0.15
+            # Capacity resets to 0 per step
             "Discharge capacity [A.h]": (
-                [0.02, 0.04, 0.06]  # step 0 (discharge): end 0.06
+                [0.0, 0.02, 0.04]  # step 0 (discharge): adds 0.04
                 + [0.0, 0.0, 0.0]  # step 1 (rest)
-                + [0.03, 0.06, 0.09]  # step 2 (discharge): end 0.09
+                + [0.0, 0.03, 0.06]  # step 2 (discharge): adds 0.06
                 + [0.0, 0.0, 0.0]  # step 3 (rest)
-                + [0.05, 0.10, 0.15]  # step 4 (discharge): end 0.15
+                + [0.0, 0.05, 0.10]  # step 4 (discharge): adds 0.10
                 + [0.0, 0.0, 0.0]  # step 5 (rest)
             ),
             "Charge capacity [A.h]": [0.0] * 18,
@@ -2569,7 +2569,7 @@ def test_gitt_to_ocp_capacity_cumulative():
     # Capacity is normalized to start at 0, then cumulative (non-decreasing)
     assert cap[0] == 0.0
     assert np.all(np.diff(cap) >= -1e-12)
-    # Step 0 adds 0.06, step 2 adds 0.06 (0.09-0.03), step 4 adds 0.10 (0.15-0.05) -> 0.06, 0.12, 0.22; normalize -> 0, 0.06, 0.16
+    # Step 0 adds 0.04, step 2 adds 0.06, step 4 adds 0.10 -> 0.04, 0.10, 0.20; normalize -> 0, 0.06, 0.16
     np.testing.assert_allclose(cap, [0.0, 0.06, 0.16], atol=1e-9)
 
 

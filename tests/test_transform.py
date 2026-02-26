@@ -238,7 +238,6 @@ def test_get_cumulative_net_capacity_basic():
     # Two discharge steps with rest in between; capacity resets per step
     data = pl.DataFrame(
         {
-            "Step count": [0, 0, 0, 1, 1, 1, 2, 2, 2],
             "Discharge capacity [A.h]": [
                 0.0,
                 0.01,
@@ -262,7 +261,6 @@ def test_get_cumulative_net_capacity_single_step():
     """Single step: cumulative equals in-step growth from zero."""
     data = pl.DataFrame(
         {
-            "Step count": [0, 0, 0, 0],
             "Discharge capacity [A.h]": [0.0, 0.1, 0.2, 0.3],
             "Charge capacity [A.h]": [0.0, 0.0, 0.0, 0.0],
         }
@@ -271,23 +269,10 @@ def test_get_cumulative_net_capacity_single_step():
     np.testing.assert_allclose(out, [0.0, 0.1, 0.2, 0.3])
 
 
-def test_get_cumulative_net_capacity_requires_step_count():
-    """Raises when data does not contain 'Step count' column."""
-    data = pl.DataFrame(
-        {
-            "Discharge capacity [A.h]": [0.1, 0.2, 0.3],
-            "Charge capacity [A.h]": [0.0, 0.0, 0.0],
-        }
-    )
-    with pytest.raises(ValueError, match="data must contain 'Step count'"):
-        iwdata.transform.get_cumulative_net_capacity(data)
-
-
 def test_get_cumulative_net_capacity_discharge_minus_charge():
     """Cumulative net capacity is discharge - charge (can be negative for charge)."""
     data = pl.DataFrame(
         {
-            "Step count": [0, 0, 0],
             "Discharge capacity [A.h]": [0.0, 0.0, 0.0],
             "Charge capacity [A.h]": [0.0, 0.1, 0.2],
         }
@@ -300,28 +285,12 @@ def test_get_cumulative_net_capacity_two_rows_one_step():
     """Two rows in one step: cumulative at end equals net at end."""
     data = pl.DataFrame(
         {
-            "Step count": [0, 0],
             "Discharge capacity [A.h]": [0.0, 0.1],
             "Charge capacity [A.h]": [0.0, 0.0],
         }
     )
     out = iwdata.transform.get_cumulative_net_capacity(data)
     np.testing.assert_allclose(out, [0.0, 0.1])
-
-
-def test_get_cumulative_net_capacity_step_count_ordering():
-    """Step boundaries follow Step count value order (not row order)."""
-    # Step count 1 then 2: first block 0.02, second block adds 0.02
-    data = pl.DataFrame(
-        {
-            "Step count": [1, 1, 1, 2, 2, 2],
-            "Discharge capacity [A.h]": [0.0, 0.01, 0.02, 0.0, 0.01, 0.02],
-            "Charge capacity [A.h]": [0.0] * 6,
-        }
-    )
-    out = iwdata.transform.get_cumulative_net_capacity(data)
-    expected = [0.0, 0.01, 0.02, 0.02, 0.03, 0.04]
-    np.testing.assert_allclose(out, expected)
 
 
 def test_set_nominal_soc():

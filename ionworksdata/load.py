@@ -774,8 +774,10 @@ class DataLoader:
         if "Step count" in rest_steps_pl.columns:
             rest_steps_pl = rest_steps_pl.sort("Step count")
 
-        data_pl = self._ensure_data_pl_has_step_count()
-        cumulative = iw_transform.get_cumulative_net_capacity(data_pl, options=None)
+        cumulative = iw_transform.get_cumulative_net_capacity(
+            self._data_pl, options=None
+        )
+        data_pl = self._data_pl
 
         ocp_points = []
         if keep_first_ocp_point and first_row_idx is not None:
