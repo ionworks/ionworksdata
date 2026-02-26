@@ -3,6 +3,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import polars as pl
 import pybamm
 import pytest
 from scipy.signal import savgol_filter
@@ -15,7 +16,7 @@ def test_get_item():
     data_loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps")
     )
-    assert data_loader["Voltage [V]"].equals(data_loader.data["Voltage [V]"])
+    assert data_loader.data["Voltage [V]"].equals(data_loader["Voltage [V]"])
 
 
 def test_ocp_data_loader():
@@ -24,8 +25,8 @@ def test_ocp_data_loader():
     assert isinstance(data_loader, iwdata.OCPDataLoader)
     assert "Voltage [V]" in data_loader.data.columns
     assert "Capacity [A.h]" in data_loader.data.columns
-    assert data_loader["Voltage [V]"].equals(data["Voltage [V]"])
-    assert data_loader["Capacity [A.h]"].equals(data["Capacity [A.h]"])
+    assert data_loader.data["Voltage [V]"].to_pandas().equals(data["Voltage [V]"])
+    assert data_loader.data["Capacity [A.h]"].to_pandas().equals(data["Capacity [A.h]"])
 
 
 def test_load_data():
@@ -36,8 +37,15 @@ def test_load_data():
     true_full_data = pd.read_csv(
         Path("tests/test_data/cccv-synthetic-with-steps/time_series.csv")
     )
-    assert data_loader.data.columns.tolist() == true_full_data.columns.tolist()
-    assert true_full_data.equals(data_loader.data)
+    loader_pd = data_loader.data.to_pandas()
+    # Polars read_csv may name first column '' vs pandas 'Unnamed: 0'
+    if len(loader_pd.columns) and loader_pd.columns[0] == "":
+        loader_pd = loader_pd.rename(columns={"": "Unnamed: 0"})
+    assert list(loader_pd.columns) == true_full_data.columns.tolist()
+    pd.testing.assert_frame_equal(
+        loader_pd.sort_index(axis=1),
+        true_full_data.sort_index(axis=1),
+    )
     assert data_loader.initial_voltage == true_full_data["Voltage [V]"].iloc[0]
     assert isinstance(data_loader, iwdata.DataLoader)
 
@@ -48,9 +56,9 @@ def test_load_data():
             "last_step": 3,
         },
     )
+    time_s = data_loader_steps_2_3.data["Time [s]"]
     np.testing.assert_allclose(
-        data_loader_steps_2_3.data["Time [s]"].iloc[-1]
-        - data_loader_steps_2_3.data["Time [s]"].iloc[0],
+        float(time_s[-1] - time_s[0]),
         data_loader_steps_2_3.steps["Duration [s]"].sum(),
     )
     all_steps = pd.read_csv(Path("tests/test_data/cccv-synthetic-with-steps/steps.csv"))
@@ -112,7 +120,7 @@ def test_generate_interpolant():
     assert sol["Current [A]"](t=3600 + 1e-9) == 5.0
     # Make sure we are doing something productive (reducing tpts)
     assert len(interpolant.x[0]) == 114
-    assert len(data_loader.data["Time [s]"]) == 563
+    assert data_loader.data["Time [s]"].len() == 563
 
 
 def test_filter_data():
@@ -134,17 +142,20 @@ def test_filter_data():
         {"first_step": 2, "last_step": 4},
     )
     filtered_voltage_manual = savgol_filter(
-        data_loader_unfiltered.data["Voltage [V]"], window_length=5, polyorder=2
+        data_loader_unfiltered.data["Voltage [V]"].to_numpy(),
+        window_length=5,
+        polyorder=2,
     )
 
     # Make sure that the filtered data is filtered and that the filtered data is different from the raw data
     np.testing.assert_allclose(
-        filtered_voltage_manual, data_loader_filtered.data["Voltage [V]"]
+        filtered_voltage_manual,
+        data_loader_filtered.data["Voltage [V]"].to_numpy(),
     )
     with pytest.raises(AssertionError):
         np.testing.assert_allclose(
-            data_loader_unfiltered.data["Voltage [V]"],
-            data_loader_filtered.data["Voltage [V]"],
+            data_loader_unfiltered.data["Voltage [V]"].to_numpy(),
+            data_loader_filtered.data["Voltage [V]"].to_numpy(),
         )
 
 
@@ -164,20 +175,20 @@ def test_interpolate_data():
     )
 
     np.testing.assert_allclose(
-        data_loader.data["Time [s]"],
+        data_loader.data["Time [s]"].to_numpy(),
         np.arange(
-            data_loader_raw.data["Time [s]"].min(),
-            data_loader_raw.data["Time [s]"].max(),
+            float(data_loader_raw.data["Time [s]"].min()),
+            float(data_loader_raw.data["Time [s]"].max()),
             0.1,
         ),
     )
 
     np.testing.assert_allclose(
-        data_loader.data["Voltage [V]"],
+        data_loader.data["Voltage [V]"].to_numpy(),
         np.interp(
-            data_loader.data["Time [s]"],
-            data_loader_raw.data["Time [s]"],
-            data_loader_raw.data["Voltage [V]"],
+            data_loader.data["Time [s]"].to_numpy(),
+            data_loader_raw.data["Time [s]"].to_numpy(),
+            data_loader_raw.data["Voltage [V]"].to_numpy(),
         ),
     )
 
@@ -190,10 +201,10 @@ def test_get_step():
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 1, "last_step": 2},
     )
-    full_data = data_loader_full.data
-    full_data = full_data[full_data["Step count"].isin([1, 2])]
+    full_data = data_loader_full.data.filter(pl.col("Step count").is_in([1, 2]))
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), full_data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        full_data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -208,10 +219,10 @@ def test_get_step_from_cycle():
             "last_step": last_step_from_cycle(1),
         },
     )
-    full_data = data_loader_full.data
-    full_data = full_data[full_data["Cycle count"] == 1]
+    full_data = data_loader_full.data.filter(pl.col("Cycle count") == 1)
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), full_data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        full_data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -395,18 +406,17 @@ def test_data_loader_roundtrip_filter_data_true():
     )
 
     # Check that both DataLoaders produce same data values
-    # (indices will differ: original vs 0-based, so compare values only)
     pd.testing.assert_frame_equal(
-        data_loader1.data.reset_index(drop=True),
-        data_loader2.data.reset_index(drop=True),
+        data_loader1.data.to_pandas(),
+        data_loader2.data.to_pandas(),
     )
     # For steps, Start/End index will differ but other columns should match
     steps_cols_to_compare = [
         c for c in data_loader1.steps.columns if c not in ["Start index", "End index"]
     ]
     pd.testing.assert_frame_equal(
-        data_loader1.steps[steps_cols_to_compare].reset_index(drop=True),
-        data_loader2.steps[steps_cols_to_compare].reset_index(drop=True),
+        data_loader1.steps.select(steps_cols_to_compare).to_pandas(),
+        data_loader2.steps.select(steps_cols_to_compare).to_pandas(),
         check_dtype=False,
     )
 
@@ -457,8 +467,12 @@ def test_data_loader_roundtrip_filter_data_false():
     )
 
     # Check that both DataLoaders produce same data
-    pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
-    pd.testing.assert_frame_equal(data_loader1.steps, data_loader2.steps)
+    pd.testing.assert_frame_equal(
+        data_loader1.data.to_pandas(), data_loader2.data.to_pandas()
+    )
+    pd.testing.assert_frame_equal(
+        data_loader1.steps.to_pandas(), data_loader2.steps.to_pandas()
+    )
 
 
 def test_ocp_data_loader_to_config_basic():
@@ -551,7 +565,9 @@ def test_ocp_data_loader_roundtrip():
         config["data"], steps=None, **config.get("options", {})
     )
 
-    pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
+    pd.testing.assert_frame_equal(
+        data_loader1.data.to_pandas(), data_loader2.data.to_pandas()
+    )
 
 
 def test_ocp_data_loader_copy():
@@ -563,12 +579,12 @@ def test_ocp_data_loader_copy():
     assert copy is not original
     assert isinstance(copy, iwdata.DataLoader)
 
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
     assert copy.data is not original.data
 
     assert list(original.data.columns) == list(copy.data.columns)
     for col in original.data.columns:
-        pd.testing.assert_series_equal(original.data[col], copy.data[col])
+        assert original.data[col].equals(copy.data[col])
 
 
 def test_data_loader_copy():
@@ -584,11 +600,11 @@ def test_data_loader_copy():
     assert isinstance(copy, iwdata.DataLoader)
 
     # Verify data is copied
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
     assert copy.data is not original.data
 
     # Verify steps are copied
-    pd.testing.assert_frame_equal(original.steps, copy.steps)
+    pd.testing.assert_frame_equal(original.steps.to_pandas(), copy.steps.to_pandas())
     assert copy.steps is not original.steps
 
     # Verify additional attributes are copied
@@ -604,13 +620,17 @@ def test_copy_independence():
     )
     copy_dl = original_dl.copy()
 
-    # Modify copy - use the first valid index
-    first_idx = copy_dl.data.index[0]
-    copy_dl.data.loc[first_idx, "Voltage [V]"] = 999.0
+    # Modify copy (Polars: immutable, so replace with new frame with first row Voltage changed)
+    copy_dl.data = copy_dl.data.with_columns(
+        pl.when(pl.int_range(0, copy_dl.data.height) == 0)
+        .then(pl.lit(999.0))
+        .otherwise(pl.col("Voltage [V]"))
+        .alias("Voltage [V]")
+    )
     copy_dl.initial_voltage = 999.0
 
     # Verify original is unchanged
-    assert original_dl.data.loc[first_idx, "Voltage [V]"] != 999.0
+    assert original_dl.data["Voltage [V]"][0] != 999.0
     assert original_dl.initial_voltage != 999.0
 
 
@@ -635,7 +655,7 @@ def test_copy_with_filters_and_interpolation():
     copy = original.copy()
 
     # Verify filtered data is preserved
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
 
     # Test with interpolation
     original_interp = iwdata.DataLoader.from_local(
@@ -649,10 +669,12 @@ def test_copy_with_filters_and_interpolation():
     copy_interp = original_interp.copy()
 
     # Verify interpolated data is preserved
-    pd.testing.assert_frame_equal(original_interp.data, copy_interp.data)
+    pd.testing.assert_frame_equal(
+        original_interp.data.to_pandas(), copy_interp.data.to_pandas()
+    )
 
     # Verify time points are interpolated
-    time_diff = np.diff(original_interp.data["Time [s]"])
+    time_diff = np.diff(original_interp.data["Time [s]"].to_numpy())
     assert np.allclose(time_diff, 0.1, atol=1e-10)
 
 
@@ -696,8 +718,8 @@ def test_get_step_with_sql_query():
     )
 
     # Verify we get cycle 1 data
-    assert data_loader.steps["Cycle count"].iloc[0] == 1
-    assert data_loader.steps["Cycle count"].iloc[-1] == 1
+    assert data_loader.steps["Cycle count"][0] == 1
+    assert data_loader.steps["Cycle count"][-1] == 1
 
     # Test with integer step indices
     data_loader_int = iwdata.DataLoader.from_local(
@@ -706,8 +728,8 @@ def test_get_step_with_sql_query():
     )
 
     # Verify correct steps are loaded
-    assert data_loader_int.steps["Step count"].iloc[0] == 2
-    assert data_loader_int.steps["Step count"].iloc[-1] == 4
+    assert data_loader_int.steps["Step count"][0] == 2
+    assert data_loader_int.steps["Step count"][-1] == 4
 
 
 def test_get_step_with_explicit_sql():
@@ -722,8 +744,8 @@ def test_get_step_with_explicit_sql():
     )
 
     # Verify we get step 3 as the first step
-    assert data_loader.steps["Step count"].iloc[0] == 3
-    assert data_loader.steps["Step count"].iloc[-1] == 5
+    assert data_loader.steps["Step count"][0] == 3
+    assert data_loader.steps["Step count"][-1] == 5
 
     # Test with explicit SQL query for cycle 0
     data_loader_cycle = iwdata.DataLoader.from_local(
@@ -735,8 +757,8 @@ def test_get_step_with_explicit_sql():
     )
 
     # Verify we get cycle 0 data
-    assert data_loader_cycle.steps["Cycle count"].iloc[0] == 0
-    assert data_loader_cycle.steps["Cycle count"].iloc[-1] == 0
+    assert data_loader_cycle.steps["Cycle count"][0] == 0
+    assert data_loader_cycle.steps["Cycle count"][-1] == 0
 
 
 def test_get_step_with_integer():
@@ -754,10 +776,12 @@ def test_get_step_with_integer():
 
     # Should produce identical results
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), data_loader_dict.data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        data_loader_dict.data.to_pandas().sort_index(axis=1),
     )
     pd.testing.assert_frame_equal(
-        data_loader.steps.sort_index(axis=1), data_loader_dict.steps.sort_index(axis=1)
+        data_loader.steps.to_pandas().sort_index(axis=1),
+        data_loader_dict.steps.to_pandas().sort_index(axis=1),
     )
 
 
@@ -835,12 +859,14 @@ def test_dataloader_with_polars_input():
     loader_polars = iwdata.DataLoader(time_series_pl, steps_pl)
     loader_pandas = iwdata.DataLoader(time_series_pd, steps_pd)
 
-    # Results should be identical (both use pandas internally)
+    # Results should be identical (both stored as polars internally)
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
     pd.testing.assert_frame_equal(
-        loader_polars.steps.sort_index(axis=1), loader_pandas.steps.sort_index(axis=1)
+        loader_polars.steps.to_pandas().sort_index(axis=1),
+        loader_pandas.steps.to_pandas().sort_index(axis=1),
     )
 
 
@@ -865,20 +891,21 @@ def test_dataloader_with_mixed_input():
 
     # Both should work and produce same results
     pd.testing.assert_frame_equal(
-        loader1.data.sort_index(axis=1), loader2.data.sort_index(axis=1)
+        loader1.data.to_pandas().sort_index(axis=1),
+        loader2.data.to_pandas().sort_index(axis=1),
     )
 
 
 def test_from_local_with_polars():
-    """Test from_local with use_polars=True."""
-    # Load with pandas (default)
-    loader_pandas = iwdata.DataLoader.from_local(
+    """Test from_local with use_polars=True (default) and use_polars=False."""
+    # Load with polars (default)
+    loader_polars = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps")
     )
 
-    # Load with polars
-    loader_polars = iwdata.DataLoader.from_local(
-        Path("tests/test_data/cccv-synthetic-with-steps"), use_polars=True
+    # Load with pandas read path
+    loader_pandas = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"), use_polars=False
     )
 
     # Results should be similar (column names might differ slightly for unnamed columns)
@@ -888,11 +915,7 @@ def test_from_local_with_polars():
 
     # Check that key columns have the same values
     for col in ["Time [s]", "Voltage [V]", "Current [A]"]:
-        pd.testing.assert_series_equal(
-            loader_pandas.data[col].reset_index(drop=True),
-            loader_polars.data[col].reset_index(drop=True),
-            check_names=False,
-        )
+        assert loader_pandas.data[col].equals(loader_polars.data[col])
 
 
 def test_ocp_dataloader_with_polars():
@@ -913,7 +936,9 @@ def test_ocp_dataloader_with_polars():
     loader_polars = iwdata.OCPDataLoader(data_pl)
 
     # Results should be identical
-    pd.testing.assert_frame_equal(loader_pandas.data, loader_polars.data)
+    pd.testing.assert_frame_equal(
+        loader_pandas.data.to_pandas(), loader_polars.data.to_pandas()
+    )
 
 
 def test_generic_dataloader_with_polars():
@@ -934,7 +959,9 @@ def test_generic_dataloader_with_polars():
     loader_polars = iwdata.DataLoader(data_pl)
 
     # Results should be identical
-    pd.testing.assert_frame_equal(loader_pandas.data, loader_polars.data)
+    pd.testing.assert_frame_equal(
+        loader_pandas.data.to_pandas(), loader_polars.data.to_pandas()
+    )
 
 
 def test_dataloader_polars_with_step_selection():
@@ -961,7 +988,8 @@ def test_dataloader_polars_with_step_selection():
 
     # Results should be identical
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -992,7 +1020,8 @@ def test_dataloader_polars_with_sql_query():
 
     # Results should be identical
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -1134,7 +1163,7 @@ def test_dataloader_from_db_lazy_fetches_on_data_access():
         _ = dl.data
 
     mock_client.cell_measurement.detail.assert_called_once_with("test-id")
-    assert isinstance(dl.data, pd.DataFrame)
+    assert isinstance(dl.data, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
@@ -1150,8 +1179,8 @@ def test_dataloader_from_db_lazy_fetches_on_steps_access():
         _ = dl.steps
 
     mock_client.cell_measurement.detail.assert_called_once_with("test-id")
-    assert isinstance(dl.steps, pd.DataFrame)
-    assert isinstance(dl.data, pd.DataFrame)
+    assert isinstance(dl.steps, pl.DataFrame)
+    assert isinstance(dl.data, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
@@ -1339,7 +1368,7 @@ def test_ocp_data_loader_capacity_column_explicit():
     )
     assert "Capacity [A.h]" in loader.data.columns
     np.testing.assert_array_almost_equal(
-        loader.data["Capacity [A.h]"].values, [0.0, 0.1, 0.2, 0.3]
+        loader.data["Capacity [A.h]"].to_numpy(), [0.0, 0.1, 0.2, 0.3]
     )
 
 
@@ -1354,11 +1383,9 @@ def test_ocp_data_loader_sort_option():
     )
     loader = iwdata.OCPDataLoader(data, options={"sort": True})
     # After sorting, voltage should decrease
-    assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
+    assert loader.data["Voltage [V]"][0] > loader.data["Voltage [V]"][-1]
     # Capacity should increase
-    assert (
-        loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
-    )
+    assert loader.data["Capacity [A.h]"][0] < loader.data["Capacity [A.h]"][-1]
 
 
 def test_ocp_data_loader_remove_duplicates_option():
@@ -1729,8 +1756,8 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
-        loader1.data.reset_index(drop=True),
-        loader2.data.reset_index(drop=True),
+        loader1.data.to_pandas().reset_index(drop=True),
+        loader2.data.to_pandas().reset_index(drop=True),
     )
 
 
@@ -1779,7 +1806,7 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
         assert mock_client.cell_measurement.detail.call_count == 1
 
     # Should have fresh data, not cached data
-    assert loader.data["Time [s]"].iloc[0] == 0  # Not 99
+    assert loader.data["Time [s]"][0] == 0  # Not 99
 
 
 def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
@@ -1822,8 +1849,8 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
-        loader1.data.reset_index(drop=True),
-        loader2.data.reset_index(drop=True),
+        loader1.data.to_pandas().reset_index(drop=True),
+        loader2.data.to_pandas().reset_index(drop=True),
     )
 
 
@@ -1884,10 +1911,8 @@ def test_data_loader_without_steps_transforms():
         steps=None,
         options={"transforms": {"sort": True}},
     )
-    assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
-    assert (
-        loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
-    )
+    assert loader.data["Voltage [V]"][0] > loader.data["Voltage [V]"][-1]
+    assert loader.data["Capacity [A.h]"][0] < loader.data["Capacity [A.h]"][-1]
 
 
 def test_data_loader_without_steps_to_config():
@@ -1917,7 +1942,7 @@ def test_data_loader_without_steps_copy():
     copy = original.copy()
     assert copy is not original
     assert copy.steps is None
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
 
 
 def test_data_loader_from_local_without_steps(tmp_path):
@@ -2020,9 +2045,9 @@ def test_gitt_to_ocp_transform():
     assert "Voltage [V]" in loader.data.columns
     assert "Capacity [A.h]" in loader.data.columns
     np.testing.assert_array_almost_equal(
-        loader.data["Voltage [V]"].values, [3.62, 3.32]
+        loader.data["Voltage [V]"].to_numpy(), [3.62, 3.32]
     )
-    assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+    assert loader.data["Capacity [A.h]"][0] == 0.0
 
 
 def test_gitt_to_ocp_requires_steps():
@@ -2098,40 +2123,42 @@ def test_steps_pl_none_without_steps():
 
 
 def test_no_pandas_conversion_during_init():
-    """Test that _data_pd_cache is None after init (no eager pandas conversion)."""
+    """Test that no eager pandas conversion happens; .data returns Polars."""
     loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 0, "last_step": 9},
     )
-    # Before accessing .data, the pandas cache should be None
+    # No pandas cache used for .data / .steps (they return polars)
     assert loader._data_pd_cache is None  # noqa: SLF001
     assert loader._steps_pd_cache is None  # noqa: SLF001
 
-    # Accessing .data populates the cache
+    # Accessing .data returns polars; pandas cache remains unused
     _ = loader.data
-    assert loader._data_pd_cache is not None  # noqa: SLF001
+    assert loader._data_pd_cache is None  # noqa: SLF001
+    assert isinstance(loader.data, pl.DataFrame)
 
 
 def test_pandas_cache_invalidation_on_data_set():
-    """Test that setting .data invalidates the pandas cache."""
+    """Test that setting .data updates internal polars and .data returns new frame."""
     import polars as pl
 
     loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 0, "last_step": 9},
     )
-    # Access data to populate cache
     _ = loader.data
-    assert loader._data_pd_cache is not None  # noqa: SLF001
+    # No pandas cache used
+    assert loader._data_pd_cache is None  # noqa: SLF001
 
     # Set new data (polars)
     new_data = pl.DataFrame({"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]})
     loader.data = new_data
     assert loader._data_pd_cache is None  # noqa: SLF001
 
-    # Accessing .data rebuilds cache
+    # .data returns the new polars frame
     result = loader.data
     assert len(result) == 2
+    assert isinstance(result, pl.DataFrame)
 
 
 def test_polars_input_preserved_without_conversion():
@@ -2151,9 +2178,9 @@ def test_polars_input_preserved_without_conversion():
     assert loader._data_pd_cache is None  # noqa: SLF001
     assert loader._steps_pd_cache is None  # noqa: SLF001
 
-    # Public API still returns pandas
-    assert isinstance(loader.data, pd.DataFrame)
-    assert isinstance(loader.steps, pd.DataFrame)
+    # Public API returns Polars
+    assert isinstance(loader.data, pl.DataFrame)
+    assert isinstance(loader.steps, pl.DataFrame)
 
 
 def test_dataloader_data_pl_no_steps():

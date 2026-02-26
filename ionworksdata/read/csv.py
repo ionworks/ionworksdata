@@ -137,7 +137,7 @@ class CSV(BaseReader):
         options: dict[str, str] | None = None,
     ) -> pl.DataFrame:
         """
-        Read a CSV file and return a pandas DataFrame with appropriate column names.
+        Read a CSV file and return a Polars DataFrame with appropriate column names.
 
         Parameters
         ----------
@@ -157,7 +157,7 @@ class CSV(BaseReader):
 
         Returns
         -------
-        pandas.DataFrame
+        pl.DataFrame
             Processed data from the CSV file with standardized column names and units. By
             default, only returns the columns "Time [s]", "Voltage [V]",
             "Current [A]",

@@ -572,7 +572,7 @@ def annotate(
     time_series: pl.DataFrame | pd.DataFrame,
     steps: pl.DataFrame | pd.DataFrame,
     column_names: list[str],
-) -> pl.DataFrame | pd.DataFrame:
+) -> pl.DataFrame:
     """
     Apply columns from the steps to the time series.
 
@@ -587,36 +587,39 @@ def annotate(
 
     Returns
     -------
-    pl.DataFrame | pd.DataFrame
-        The time series with the columns applied. Returns the same type as the input
-        time_series.
+    pl.DataFrame
+        The time series with the columns applied.
     """
-    # Remember the input type
-    return_polars = isinstance(time_series, pl.DataFrame)
-
-    # Convert to pandas for row-wise slice assignment via .loc[start:end, col] = value
-    # Polars doesn't support efficient in-place row slice assignment by index ranges.
-    # This operation requires iterating over step ranges and updating corresponding
-    # time series rows, which is a pandas strength.
-    if isinstance(steps, pl.DataFrame):
-        steps_pd = steps.to_pandas()
+    if isinstance(time_series, pd.DataFrame):
+        time_series_pl = pl.from_pandas(time_series)
     else:
-        steps_pd = steps
-
-    if isinstance(time_series, pl.DataFrame):
-        time_series_pd = time_series.to_pandas()
+        time_series_pl = time_series
+    if isinstance(steps, pd.DataFrame):
+        steps_pl = pl.from_pandas(steps)
     else:
-        time_series_pd = time_series
+        steps_pl = steps
 
-    time_series_pd = time_series_pd.copy()
+    time_series_pl = time_series_pl.with_row_index("__row_id")
 
-    for _, row in steps_pd.iterrows():
-        for column_name in column_names:
-            time_series_pd.loc[row["Start index"] : row["End index"], column_name] = (
-                row[column_name]
-            )
+    # Build a long-format frame: __row_id and one column per column_name
+    # Each step contributes rows from Start index to End index (inclusive) with
+    # the step's values for column_names.
+    parts: list[pl.DataFrame] = []
+    for row in steps_pl.iter_rows(named=True):
+        start = int(row["Start index"])
+        end = int(row["End index"])
+        row_ids = pl.Series("__row_id", range(start, end + 1))
+        cols = [row_ids]
+        for col_name in column_names:
+            val = row[col_name]
+            cols.append(pl.Series(col_name, [val] * (end - start + 1)))
+        parts.append(pl.DataFrame(cols))
+    if not parts:
+        for col_name in column_names:
+            time_series_pl = time_series_pl.with_columns(pl.lit(None).alias(col_name))
+        return time_series_pl.drop("__row_id")
 
-    # Convert back to Polars if input was Polars
-    if return_polars:
-        return pl.from_pandas(time_series_pd)
-    return time_series_pd
+    steps_by_row = pl.concat(parts)
+
+    time_series_pl = time_series_pl.join(steps_by_row, on="__row_id", how="left")
+    return time_series_pl.drop("__row_id")

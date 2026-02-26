@@ -182,6 +182,11 @@ class DataLoader:
 
     Post-load preprocessing is configured via the ``transforms`` dict option.
 
+    The ``data`` and ``steps`` attributes return Polars DataFrames. Use
+    ``loader.data.to_pandas()`` or ``loader.steps.to_pandas()`` for pandas.
+    Constructors and property setters accept both pandas and Polars; inputs
+    are converted to Polars internally.
+
     Parameters
     ----------
     time_series : pd.DataFrame | pl.DataFrame | dict
@@ -225,16 +230,18 @@ class DataLoader:
     # ------------------------------------------------------------------
 
     @property
-    def data(self):
+    def data(self) -> pl.DataFrame:
+        """Time-series data as a Polars DataFrame. Use .data.to_pandas() for pandas."""
         self._ensure_db_data_loaded()
-        if self._data_pd_cache is None:
-            df = self._data_pl.to_pandas()
-            # Preserve the original row index offset from sliced time-series
-            offset = getattr(self, "_start_idx", 0) or 0
-            if offset > 0:
-                df.index = range(offset, offset + len(df))
-            self._data_pd_cache = df
-        return self._data_pd_cache
+        if not getattr(self, "_data_steps_warned", False):
+            warnings.warn(
+                "DataLoader.data and .steps now return Polars DataFrames. "
+                "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
+                UserWarning,
+                stacklevel=2,
+            )
+            self._data_steps_warned = True  # noqa: SLF001
+        return self._data_pl
 
     @data.setter
     def data(self, value):
@@ -251,7 +258,7 @@ class DataLoader:
         self._ensure_db_data_loaded()
         return self._data_pl
 
-    def __getitem__(self, key: str) -> pd.Series:
+    def __getitem__(self, key: str) -> pl.Series:
         return self.data[key]
 
     @staticmethod
@@ -380,13 +387,20 @@ class DataLoader:
         return pd.DataFrame(interpolated_data)
 
     @property
-    def steps(self):
+    def steps(self) -> pl.DataFrame | None:
+        """Step summary as a Polars DataFrame, or None. Use .steps.to_pandas() for pandas."""
         self._ensure_db_data_loaded()
         if self._steps_pl is None:
             return None
-        if self._steps_pd_cache is None:
-            self._steps_pd_cache = self._steps_pl.to_pandas()
-        return self._steps_pd_cache
+        if not getattr(self, "_data_steps_warned", False):
+            warnings.warn(
+                "DataLoader.data and .steps now return Polars DataFrames. "
+                "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
+                UserWarning,
+                stacklevel=2,
+            )
+            self._data_steps_warned = True  # noqa: SLF001
+        return self._steps_pl
 
     @steps.setter
     def steps(self, value):
@@ -465,6 +479,7 @@ class DataLoader:
         capacity_column = parsed["capacity_column"]
         self._capacity_column = capacity_column
         self._steps_pd_cache = None
+        self._data_steps_warned = False  # noqa: SLF001
         if steps is not None:
             data_pl = self._init_with_steps(time_series, steps, options)
         else:
@@ -1222,7 +1237,7 @@ class DataLoader:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_local(cls, data_path, options=None, use_polars=False):
+    def from_local(cls, data_path, options=None, use_polars=True):
         """
         Load data from local filesystem.
 
@@ -1234,7 +1249,8 @@ class DataLoader:
         options : dict | None, optional
             Options to pass to the DataLoader constructor.
         use_polars : bool, optional
-            If True, read data using Polars. Default is False (uses Pandas).
+            If True (default), read CSV with Polars. If False, read with Pandas
+            (data is still stored as Polars internally).
 
         Returns
         -------
@@ -1347,6 +1363,7 @@ class DataLoader:
         else:
             instance._steps_pl = None  # noqa: SLF001
         instance._steps_pd_cache = None  # noqa: SLF001
+        instance._data_steps_warned = False  # noqa: SLF001
         instance.initial_voltage = initial_voltage
         instance.start_idx = start_idx
         instance.end_idx = end_idx
