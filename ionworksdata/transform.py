@@ -713,6 +713,51 @@ def _calculate_net_capacity(
     return discharge_cap - charge_cap
 
 
+def get_cumulative_net_capacity(
+    data: pl.DataFrame,
+    options: dict | None = None,
+) -> np.ndarray:
+    """
+    Cumulative net capacity (no reset) at each row, using step boundaries.
+
+    Assumes discharge/charge capacity reset at each step. Net is discharge minus
+    charge at each row. For each step, capacity added = net_end - net_start;
+    cumulative at each row is the sum of added over previous steps plus the
+    in-step delta (net[row] - net[step_start]).
+    Step boundaries are derived from the "Step count" column in data.
+    Step count is assumed to be 0, 1, 2, ... (incrementing by 1).
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Data with discharge/charge capacity columns (or current for integration).
+        Must contain a "Step count" column.
+    options : dict, optional
+        Passed to get_current_and_capacity_units / _calculate_net_capacity.
+
+    Returns
+    -------
+    np.ndarray
+        Cumulative net capacity at each row, same length as data.
+    """
+    if "Step count" not in data.columns:
+        raise ValueError("data must contain 'Step count' column")
+    step_count = data.get_column("Step count").to_numpy()
+    net = _calculate_net_capacity(data, options)  # discharge - charge
+    n = len(net)
+    out = np.zeros(n)
+    cumulative = 0.0
+    step_start_net = None
+    for i in range(n):
+        if step_start_net is None or (i > 0 and step_count[i] != step_count[i - 1]):
+            step_start_net = net[i]
+        out[i] = cumulative + (net[i] - step_start_net)
+        if i == n - 1 or step_count[i + 1] != step_count[i]:
+            cumulative += net[i] - step_start_net
+            step_start_net = None
+    return out
+
+
 def set_net_capacity(data: pl.DataFrame, options: dict | None = None) -> pl.DataFrame:
     """
     Calculate the net capacity for the data and assign it to a new column called

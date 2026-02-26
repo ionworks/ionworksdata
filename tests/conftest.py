@@ -5,6 +5,11 @@
 # to the test method
 # See https://docs.pytest.org/en/stable/fixture.html for more information
 
+# Use non-interactive backend for tests (avoids crash when no display, e.g. CI/macOS)
+import matplotlib
+
+matplotlib.use("Agg")
+
 import tempfile
 from pathlib import Path
 

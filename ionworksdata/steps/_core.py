@@ -574,21 +574,27 @@ def annotate(
     column_names: list[str],
 ) -> pl.DataFrame:
     """
-    Apply columns from the steps to the time series.
+    Apply columns from the steps table to the time series.
+
+    Each time-series row is assigned the step's value for each requested column,
+    based on step "Start index" and "End index" (inclusive). Use this to attach
+    step-level info (e.g. "Step count", "Label", "Step type") to every row for
+    downstream transforms or filtering.
 
     Parameters
     ----------
     time_series : pl.DataFrame | pd.DataFrame
-        The time series to apply the columns to.
+        The time series to annotate. Row indices are 0 to n-1; steps must use
+        the same index space (e.g. slice coordinates).
     steps : pl.DataFrame | pd.DataFrame
-        The steps to apply the columns from.
+        Steps with "Start index" and "End index" and the columns in column_names.
     column_names : list[str]
-        The columns to apply from the steps to the time series.
+        Columns to copy from steps onto the time series.
 
     Returns
     -------
     pl.DataFrame
-        The time series with the columns applied.
+        The time series with the requested step columns added.
     """
     if isinstance(time_series, pd.DataFrame):
         time_series_pl = pl.from_pandas(time_series)
