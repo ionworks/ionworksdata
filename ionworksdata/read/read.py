@@ -851,34 +851,23 @@ def measurement_details(
         labels_to_apply: list[dict[str, Any]] = labels or default_labels
         for label in labels_to_apply:
             for label_name, label_options in label.items():
-                # Label methods require pandas (see comments in label files for details)
-                # Convert to pandas, apply labeling, then convert back to Polars
-                if isinstance(steps, pl.DataFrame):
-                    steps_pd = steps.to_pandas()
-                else:
-                    steps_pd = steps
                 label_name_lower = label_name.lower()
                 if label_name_lower == "cycling":
-                    steps_pd = iwdata.steps.label_cycling(
-                        steps_pd, options=label_options
-                    )
+                    steps = iwdata.steps.label_cycling(steps, options=label_options)
                 elif label_name_lower == "pulse":
-                    steps_pd = iwdata.steps.label_pulse(steps_pd, options=label_options)
+                    steps = iwdata.steps.label_pulse(steps, options=label_options)
                 elif label_name_lower == "eis":
-                    steps_pd = iwdata.steps.label_eis(steps_pd, options=label_options)
+                    steps = iwdata.steps.label_eis(steps, options=label_options)
                 else:
                     raise ValueError(f"Unknown label type: {label_name}")
-                steps = pl.from_pandas(steps_pd)
         # Check that the steps labels are valid
         validations: list[bool] = []
-        # Convert to pandas for validation (validate_steps requires pandas)
-        steps_pd_for_validate = (
-            steps.to_pandas() if isinstance(steps, pl.DataFrame) else steps
-        )
-        for label_name in steps_pd_for_validate["Label"].unique():
-            if pd.isna(label_name):
+        for label_name in steps["Label"].unique().to_list():
+            if label_name is None or (
+                isinstance(label_name, float) and pd.isna(label_name)
+            ):
                 continue
-            this_valid = iwdata.steps.validate(steps_pd_for_validate, label_name)
+            this_valid = iwdata.steps.validate(steps, label_name)
             validations.append(this_valid)
         step_labels_validated = all(validations) if validations else False
 

@@ -10,6 +10,7 @@ _version.py
 _build
 .coverage
 .claude
+uv.lock 
 
 # Working directories for testing and development
 workspace
