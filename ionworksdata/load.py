@@ -225,7 +225,8 @@ class DataLoader:
                     See :meth:`interpolate_data_pl` for details.
                 - keep_first_ocp_point : bool
                     If True, prepend the first point (see :meth:`transform_gitt_to_ocp`
-                    and :meth:`transform_rest_to_ocp`). Default False.
+                    and :meth:`transform_rest_to_ocp`). Default False. Ignored if
+                    gitt_to_ocp and rest_to_ocp are both False.
     """
 
     def __init__(
@@ -411,6 +412,11 @@ class DataLoader:
             for c in data_pd.columns
             if c != x_column and pd.api.types.is_numeric_dtype(data_pd[c])
         ]
+        skipped = [
+            c for c in data_pd.columns if c != x_column and c not in numeric_cols
+        ]
+        if skipped:
+            logger.debug("interpolate_data: skipping non-numeric columns %s", skipped)
         for variable in numeric_cols:
             interpolated_data[variable] = np.interp(
                 knots, x_values, data_pd[variable].values
@@ -507,6 +513,10 @@ class DataLoader:
         ):
             if key in options and key not in transforms:
                 transforms[key] = options[key]
+        if transforms.get("gitt_to_ocp") and transforms.get("rest_to_ocp"):
+            raise ValueError(
+                "gitt_to_ocp and rest_to_ocp are mutually exclusive; set only one"
+            )
         return {
             "transforms": transforms,
             "first_step": options.get("first_step"),
