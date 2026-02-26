@@ -15,7 +15,7 @@ from ionworksdata.logger import logger
 def label_pulse(
     steps: pd.DataFrame | pl.DataFrame,
     options: dict | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Label the "pulse" portion of the test.
 
@@ -45,15 +45,14 @@ def label_pulse(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         The steps dataframe with the pulse steps labeled.
     """
-    # Convert to pandas if needed
-    if isinstance(steps, pl.DataFrame):
-        steps = steps.to_pandas()
-    steps = steps.copy()
+    if isinstance(steps, pd.DataFrame):
+        steps_pl = pl.from_pandas(steps)
+    else:
+        steps_pl = steps.clone()
 
-    # Set default options
     default_options = {
         "cell_metadata": "[required]",
         "lower pulse capacity cutoff": 1 / 100,
@@ -75,146 +74,136 @@ def label_pulse(
     upper_pulse_cutoff = options_validated["upper pulse capacity cutoff"]
     current_direction = options_validated["current direction"]
 
-    # Get constant current steps
-    pulse_steps = steps[
-        steps["Step type"].isin(
+    pulse_steps = steps_pl.filter(
+        pl.col("Step type").is_in(
             ["Constant current discharge", "Constant current charge"]
         )
-    ]
-
-    # Filter by upper capacity cutoff
+    )
     discharge_cap = pulse_steps["Discharge capacity [A.h]"].abs()
     charge_cap = pulse_steps["Charge capacity [A.h]"].abs()
-    dQ = abs(discharge_cap - charge_cap)
-    capacity_filter = dQ < Q * upper_pulse_cutoff
-    pulse_steps = pulse_steps[capacity_filter]
+    dQ = (discharge_cap - charge_cap).abs()
+    pulse_steps = pulse_steps.filter(dQ < Q * upper_pulse_cutoff)
 
-    if len(pulse_steps) <= options_validated["min pulses"]:
+    if pulse_steps.height <= options_validated["min pulses"]:
         logger.warning(
             "Insufficient pulse steps found in the data, unable to add labels."
         )
-        return steps
+        return steps_pl
 
     pulse_step_counts = pulse_steps["Step count"]
-
-    # Find the "long" pulse steps. Recalculate dQ on the new pulse_steps dataframe.
     discharge_cap = pulse_steps["Discharge capacity [A.h]"].abs()
     charge_cap = pulse_steps["Charge capacity [A.h]"].abs()
-    dQ = abs(discharge_cap - charge_cap)
-    capacity_filter = dQ > Q * lower_pulse_cutoff
-    long_pulse_steps = pulse_steps[capacity_filter]
-    short_pulse_steps = pulse_steps[~capacity_filter]
+    dQ = (discharge_cap - charge_cap).abs()
+    long_pulse_steps = pulse_steps.filter(dQ > Q * lower_pulse_cutoff)
+    short_pulse_steps = pulse_steps.filter(dQ <= Q * lower_pulse_cutoff)
     short_pulse_step_counts = short_pulse_steps["Step count"]
 
-    # Filter "long" pulse steps by current direction
     if current_direction in ["discharge", "delithiation"]:
-        long_pulse_steps_remove = long_pulse_steps[
-            long_pulse_steps["Step type"] == "Constant current charge"
-        ]
-        long_pulse_steps = long_pulse_steps[
-            long_pulse_steps["Step type"] == "Constant current discharge"
-        ]
+        long_pulse_steps_remove = long_pulse_steps.filter(
+            pl.col("Step type") == "Constant current charge"
+        )
+        long_pulse_steps = long_pulse_steps.filter(
+            pl.col("Step type") == "Constant current discharge"
+        )
     elif current_direction in ["charge", "lithiation"]:
-        long_pulse_steps_remove = long_pulse_steps[
-            long_pulse_steps["Step type"] == "Constant current discharge"
-        ]
-        long_pulse_steps = long_pulse_steps[
-            long_pulse_steps["Step type"] == "Constant current charge"
-        ]
+        long_pulse_steps_remove = long_pulse_steps.filter(
+            pl.col("Step type") == "Constant current discharge"
+        )
+        long_pulse_steps = long_pulse_steps.filter(
+            pl.col("Step type") == "Constant current charge"
+        )
     else:
         raise ValueError("Undefined current direction")
 
     long_pulse_step_counts = long_pulse_steps["Step count"]
     long_pulse_step_counts_remove = long_pulse_steps_remove["Step count"]
-    # Get rest steps
-    rest_step_counts = steps[steps["Step type"] == "Rest"]["Step count"]
+    long_pulse_set = set(long_pulse_step_counts.to_list())
 
-    # Only keep rests that are +/- 1 step away from "long" pulse steps (where we have
-    # only kept steps in the correct direction) or short pulse steps (to catch HPPT)
-    long_mask = (
-        abs(rest_step_counts.values[:, None] - long_pulse_step_counts.values) == 1
-    ).any(axis=1)
-    short_mask = (
-        abs(rest_step_counts.values[:, None] - short_pulse_step_counts.values) == 1
-    ).any(axis=1)
-    rest_mask = long_mask | short_mask
-    rest_step_counts = rest_step_counts[rest_mask]
-
-    # Combine all step numbers, sort them, and get unique values
-    step_counts = (
-        pd.concat([pulse_step_counts, rest_step_counts]).sort_values().unique()
+    rest_steps = steps_pl.filter(pl.col("Step type") == "Rest")
+    rest_step_counts = rest_steps["Step count"]
+    rest_arr = rest_step_counts.to_numpy()
+    long_arr = long_pulse_step_counts.to_numpy()
+    short_arr = short_pulse_step_counts.to_numpy()
+    long_mask = (np.abs(rest_arr[:, None] - long_arr) == 1).any(axis=1)
+    short_mask = (np.abs(rest_arr[:, None] - short_arr) == 1).any(axis=1)
+    rest_step_counts = pl.Series(
+        rest_step_counts.name, rest_arr[long_mask | short_mask]
     )
-    # Remove steps that are in the remove list, so we can break up charge and discharge
-    # blocks
-    step_counts = step_counts[
-        ~np.isin(step_counts, long_pulse_step_counts_remove.values)
-    ]
 
-    # Find start and stop idx of each contiguous block of step counts, only keep blocks
-    # that have at least one "long" pulse step
+    step_counts = pl.concat([pulse_step_counts, rest_step_counts]).unique().sort()
+    remove_set = set(long_pulse_step_counts_remove.to_list())
+    step_counts_list = [s for s in step_counts.to_list() if s not in remove_set]
+    step_counts_arr = np.array(sorted(set(step_counts_list)))
+
     blocks: list[list[int]] = []
     current_block: list[int] = []
-    for step in step_counts:
+    for step in step_counts_arr:
+        step_val = int(step)
         if len(current_block) == 0:
-            current_block.append(step)
-        elif step == current_block[-1] + 1:
-            current_block.append(step)
+            current_block.append(step_val)
+        elif step_val == current_block[-1] + 1:
+            current_block.append(step_val)
         else:
-            if any(s in long_pulse_step_counts for s in current_block):
+            if any(s in long_pulse_set for s in current_block):
                 blocks.append(current_block)
-            current_block = [step]
-    # Check final block
-    if len(current_block) > 0 and any(
-        s in long_pulse_step_counts for s in current_block
-    ):
+            current_block = [step_val]
+    if len(current_block) > 0 and any(s in long_pulse_set for s in current_block):
         blocks.append(current_block)
-    # Update step_counts to only include steps in valid blocks
-    step_counts = (
-        pd.Series([s for block in blocks for s in block]).sort_values().unique()
-    )
 
-    # Add group numbers and label pulse type for each block
+    step_to_label: dict[int, str] = {}
+    step_to_group: dict[int, int] = {}
+
     for block in blocks:
-        block_steps = steps.loc[block]
-        block_step_counts = block_steps["Step count"]
+        block_df = steps_pl.filter(pl.col("Step count").is_in(block))
+        is_long = block_df["Step count"].is_in(long_pulse_step_counts.to_list())
+        group_vals = (is_long.cum_sum() - 1).cast(pl.Int64)
+        block_df = block_df.with_columns(group_vals.alias("_grp"))
 
-        # Add a group number which increments after each "long" pulse step, and resets
-        # to zero for each block
-        groupseries = (
-            steps.loc[block_step_counts, "Step count"]
-            .isin(long_pulse_step_counts)
-            .cumsum()
-            - 1
+        rest_in_block = block_df.filter(pl.col("Step type") == "Rest")
+        n_rest_per_group = rest_in_block.group_by("_grp").len()
+        one_rest_per_group = (
+            n_rest_per_group.filter(pl.col("len") == 1).height
+            == n_rest_per_group.height
         )
-        block_steps["Group number"] = groupseries
+        label = "GITT" if one_rest_per_group else "HPPT"
 
-        # Label pulse type: GITT if one rest per group, otherwise HPPT
-        groups = block_steps.groupby("Group number")
-        if all((group["Step type"] == "Rest").sum() == 1 for _, group in groups):
-            label = "GITT"
-        else:
-            label = "HPPT"
-
-        # If there are short pulses before the SOC change pulse ("long" pulse), this
-        # is labelled as Group number -1. For example this happens during HPPT if the
-        # short pulses come before the SOC change pulse.
-        # For GITT, we don't keep any short pulses before the SOC change pulse (these
-        # usually correspond to short charge steps at the start of the test).
-        # For HPPT we do keep the short pulses before the SOC change pulse, but we add
-        # one to the group number for all steps to account for the "-1" group.
         if label == "GITT":
-            # Don't keep any short pulses before the SOC change pulse ("long" pulse)
-            block_step_counts = block_steps[block_steps["Group number"] >= 0][
-                "Step count"
-            ]
-        elif label == "HPPT":
-            # Add one to the group number for all steps (the "-1" group is short
-            # pulses before and SOC change pulse)
-            if block_steps["Group number"].min() == -1:
-                block_steps["Group number"] = block_steps["Group number"] + 1
+            block_df = block_df.filter(pl.col("_grp") >= 0)
+        elif block_df["_grp"].min() == -1:
+            block_df = block_df.with_columns((pl.col("_grp") + 1).alias("_grp"))
 
-        # Add the group number and label back to the steps dataframe
-        steps.loc[block_step_counts, "Group number"] = block_steps["Group number"]
-        steps.loc[block_step_counts, "Label"] = label
+        for row in block_df.iter_rows(named=True):
+            sc = row["Step count"]
+            step_to_label[sc] = label
+            step_to_group[sc] = int(row["_grp"])
 
-    return steps
+    if not step_to_label:
+        return steps_pl
+
+    step_counts_list = steps_pl["Step count"].to_list()
+    orig_labels = (
+        steps_pl["Label"].to_list()
+        if "Label" in steps_pl.columns
+        else [""] * len(steps_pl)
+    )
+    orig_groups = (
+        steps_pl["Group number"].to_list()
+        if "Group number" in steps_pl.columns
+        else [None] * len(steps_pl)
+    )
+    label_series = pl.Series(
+        "Label",
+        [
+            step_to_label.get(sc, orig_labels[i])
+            for i, sc in enumerate(step_counts_list)
+        ],
+    )
+    group_series = pl.Series(
+        "Group number",
+        [
+            step_to_group.get(sc, orig_groups[i])
+            for i, sc in enumerate(step_counts_list)
+        ],
+    )
+    steps_pl = steps_pl.with_columns([label_series, group_series])
+    return steps_pl
