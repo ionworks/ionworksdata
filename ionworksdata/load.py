@@ -142,8 +142,22 @@ def _load_from_cache(measurement_id: str) -> dict | None:
     return None
 
 
+def _read_cache_raw(measurement_id: str) -> dict | None:
+    """Read cache file without TTL check. Used when merging partial updates."""
+    if not _CACHE_CONFIG["enabled"]:
+        return None
+    cache_path = _get_cache_path(measurement_id)
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
 def _save_to_cache(measurement_id: str, data: dict) -> None:
-    """Save measurement data to cache."""
+    """Save measurement data to cache. Merges with existing cache for partial updates."""
     if not _CACHE_CONFIG["enabled"]:
         return
 
@@ -151,9 +165,11 @@ def _save_to_cache(measurement_id: str, data: dict) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     cache_path = _get_cache_path(measurement_id)
+    existing = _read_cache_raw(measurement_id)
+    merged = {**(existing or {}), **data}
     try:
         with open(cache_path, "wb") as f:
-            pickle.dump(data, f)
+            pickle.dump(merged, f)
     except Exception:
         # Silently fail if we can't write cache
         pass
@@ -232,7 +248,7 @@ class DataLoader:
     @property
     def data(self) -> pl.DataFrame:
         """Time-series data as a Polars DataFrame. Use .data.to_pandas() for pandas."""
-        self._ensure_db_data_loaded()
+        self._ensure_time_series_loaded()
         if not getattr(self, "_data_steps_warned", False):
             warnings.warn(
                 "DataLoader.data and .steps now return Polars DataFrames. "
@@ -255,7 +271,7 @@ class DataLoader:
 
     @property
     def data_pl(self) -> pl.DataFrame:
-        self._ensure_db_data_loaded()
+        self._ensure_time_series_loaded()
         return self._data_pl
 
     def __getitem__(self, key: str) -> pl.Series:
@@ -389,7 +405,7 @@ class DataLoader:
     @property
     def steps(self) -> pl.DataFrame | None:
         """Step summary as a Polars DataFrame, or None. Use .steps.to_pandas() for pandas."""
-        self._ensure_db_data_loaded()
+        self._ensure_steps_loaded()
         if self._steps_pl is None:
             return None
         if not getattr(self, "_data_steps_warned", False):
@@ -416,42 +432,102 @@ class DataLoader:
 
     @property
     def steps_pl(self) -> pl.DataFrame | None:
-        self._ensure_db_data_loaded()
+        self._ensure_steps_loaded()
         return self._steps_pl
 
-    def _ensure_db_data_loaded(self):
-        """Fetch and initialise data from the DB on first access (lazy loading)."""
-        if not getattr(self, "_lazy_db_pending", False):
+    @property
+    def initial_voltage(self):
+        """Initial voltage (from first step or previous step end). Lazy-loads steps when from_db."""
+        self._ensure_steps_loaded()
+        return getattr(self, "_initial_voltage", None)
+
+    @initial_voltage.setter
+    def initial_voltage(self, value):
+        self._initial_voltage = value
+
+    def _ensure_steps_loaded(self):
+        """Fetch and apply step data from the DB on first access (steps only, no time series)."""
+        if not getattr(self, "_lazy_steps_pending", False):
             return
-        self._lazy_db_pending = False
+        self._lazy_steps_pending = False
         measurement_id = self._measurement_id
-        use_cache = self._lazy_use_cache
-        options = self._lazy_options
+        use_cache = getattr(self, "_lazy_use_cache", True)
         timeout = getattr(self, "_lazy_timeout", None)
 
-        cached_data = None
+        steps = None
+        steps_from_cache = False
         if use_cache:
-            cached_data = _load_from_cache(measurement_id)
+            cached = _load_from_cache(measurement_id)
+            if cached is not None and "steps" in cached:
+                steps = cached["steps"]
+                steps_from_cache = True
 
-        if cached_data is not None:
-            time_series = cached_data.get("time_series")
-            steps = cached_data.get("steps")
-        else:
+        if not steps_from_cache:
             from ionworks import Ionworks
 
             client = Ionworks(timeout=timeout)
-            measurement_detail = client.cell_measurement.detail(measurement_id)
-            time_series = measurement_detail.time_series
-            steps = getattr(measurement_detail, "steps", None)
-            cache_payload = {"time_series": time_series}
-            if steps is not None:
-                cache_payload["steps"] = steps
+            steps = client.cell_measurement.steps(measurement_id)
             if use_cache:
-                _save_to_cache(measurement_id, cache_payload)
+                _save_to_cache(measurement_id, {"steps": steps})
 
-        self._measurement_id = None
-        self._setup(time_series, steps, options)
-        self._measurement_id = measurement_id
+        if steps is None:
+            self._steps_pl = None
+            self._original_steps_pl = None
+            self._initial_voltage = None
+            self._start_idx = 0
+            self._end_idx = 0
+            return
+
+        steps_pl = self._to_polars(steps)
+
+        self._original_steps_pl = steps_pl
+        sliced_steps_pl, initial_voltage, start_idx, end_idx = self._apply_step_slice(
+            steps_pl, self._first_step, self._last_step
+        )
+        self._steps_pl = sliced_steps_pl
+        self._steps_pd_cache = None
+        self._initial_voltage = initial_voltage
+        self._start_idx = start_idx
+        self._end_idx = end_idx
+
+    def _ensure_time_series_loaded(self):
+        """Fetch and initialise time series from the DB. Ensures steps are loaded first for slicing."""
+        if not getattr(self, "_lazy_time_series_pending", False):
+            return
+        self._ensure_steps_loaded()
+        self._lazy_time_series_pending = False
+        measurement_id = self._measurement_id
+        use_cache = getattr(self, "_lazy_use_cache", True)
+        timeout = getattr(self, "_lazy_timeout", None)
+        capacity_column = getattr(self, "_capacity_column", None)
+
+        time_series = None
+        if use_cache:
+            cached = _load_from_cache(measurement_id)
+            if cached is not None:
+                time_series = cached.get("time_series")
+
+        if time_series is None:
+            from ionworks import Ionworks
+
+            client = Ionworks(timeout=timeout)
+            time_series = client.cell_measurement.time_series(measurement_id)
+            if use_cache:
+                _save_to_cache(measurement_id, {"time_series": time_series})
+
+        time_series_pl = self._to_polars(time_series)
+
+        self._original_time_series_pl = time_series_pl
+        if self._steps_pl is None:
+            data_pl = time_series_pl
+        else:
+            start_idx = self._start_idx
+            end_idx = self._end_idx
+            data_pl = time_series_pl.slice(start_idx, end_idx - start_idx)
+        data_pl = self._alias_columns(data_pl, capacity_column)
+        self._data_pl = data_pl
+        self._data_pd_cache = None
+        self._apply_transforms()
 
     # ------------------------------------------------------------------
     # Initialization paths
@@ -466,48 +542,6 @@ class DataLoader:
             transforms["filters"] = options["filters"]
         if "interpolate" in options and "interpolate" not in transforms:
             transforms["interpolate"] = options["interpolate"]
-        return {
-            "transforms": transforms,
-            "first_step": options.get("first_step"),
-            "last_step": options.get("last_step"),
-            "capacity_column": options.get("capacity_column"),
-        }
-
-    def _setup(self, time_series, steps, options):
-        """Set up data, steps, and transforms. Called from __init__ and lazy DB load."""
-        parsed = self._parse_options(options)
-        self._transforms = parsed["transforms"]
-        capacity_column = parsed["capacity_column"]
-        self._capacity_column = capacity_column
-        self._steps_pd_cache = None
-        self._data_steps_warned = False  # noqa: SLF001
-        if steps is not None:
-            data_pl = self._init_with_steps(time_series, steps, options)
-        else:
-            data_pl = self._init_without_steps(time_series, options)
-        data_pl = self._alias_columns(data_pl, capacity_column)
-        self._data_pl = data_pl
-        self._data_pd_cache = None
-        self._apply_transforms()
-
-    def _init_with_steps(self, time_series, steps, options):
-        # Normalize inputs to polars
-        if isinstance(time_series, pl.DataFrame):
-            time_series_pl = time_series
-        elif isinstance(time_series, pd.DataFrame):
-            time_series_pl = pl.from_pandas(time_series)
-        else:
-            time_series_pl = pl.DataFrame(time_series)
-        if isinstance(steps, pl.DataFrame):
-            steps_pl = steps
-        elif isinstance(steps, pd.DataFrame):
-            steps_pl = pl.from_pandas(steps)
-        else:
-            steps_pl = pl.DataFrame(steps)
-
-        # Polars DataFrames are immutable so no .copy() needed
-        self._original_time_series_pl = time_series_pl
-        self._original_steps_pl = steps_pl
 
         first_step = options.get("first_step")
         last_step = options.get("last_step")
@@ -534,8 +568,26 @@ class DataLoader:
             )
             last_step = last_step_dict
 
-        self._first_step = first_step
-        self._last_step = last_step
+        return {
+            "transforms": transforms,
+            "first_step": first_step,
+            "last_step": last_step,
+            "capacity_column": options.get("capacity_column"),
+        }
+
+    @staticmethod
+    def _to_polars(data):
+        """Normalize data to a Polars DataFrame."""
+        if isinstance(data, pl.DataFrame):
+            return data
+        elif isinstance(data, pd.DataFrame):
+            return pl.from_pandas(data)
+        return pl.DataFrame(data)
+
+    def _apply_step_slice(self, steps_pl: pl.DataFrame, first_step, last_step):
+        """Apply first_step/last_step to steps and return sliced steps, initial_voltage, start_idx, end_idx."""
+        if steps_pl.height == 0:
+            return steps_pl, None, 0, 0
 
         first_step_idx = self._get_step(first_step, steps_pl, first=True)
         last_step_idx = self._get_step(last_step, steps_pl, first=False)
@@ -543,41 +595,66 @@ class DataLoader:
         sliced_steps_pl = steps_pl.slice(
             first_step_idx, last_step_idx - first_step_idx + 1
         )
-        self._steps_pl = sliced_steps_pl
-        self._steps_pd_cache = None
 
         if first_step_idx == 0:
-            self.initial_voltage = sliced_steps_pl["Start voltage [V]"][0]
+            initial_voltage = float(sliced_steps_pl["Start voltage [V]"][0])
         else:
-            self.initial_voltage = steps_pl["End voltage [V]"][first_step_idx - 1]
+            initial_voltage = float(steps_pl["End voltage [V]"][first_step_idx - 1])
 
         start_idx = int(sliced_steps_pl["Start index"][0])
         end_idx = int(sliced_steps_pl["End index"][-1]) + 1
+        return sliced_steps_pl, initial_voltage, start_idx, end_idx
+
+    def _setup(self, time_series, steps, options):
+        """Set up data, steps, and transforms. Called from __init__ and lazy DB load."""
+        parsed = self._parse_options(options)
+        self._transforms = parsed["transforms"]
+        self._first_step = parsed["first_step"]
+        self._last_step = parsed["last_step"]
+        capacity_column = parsed["capacity_column"]
+        self._capacity_column = capacity_column
+        self._steps_pd_cache = None
+        self._data_steps_warned = False  # noqa: SLF001
+        if steps is not None:
+            data_pl = self._init_with_steps(time_series, steps)
+        else:
+            data_pl = self._init_without_steps(time_series)
+        data_pl = self._alias_columns(data_pl, capacity_column)
+        self._data_pl = data_pl
+        self._data_pd_cache = None
+        self._apply_transforms()
+
+    def _init_with_steps(self, time_series, steps):
+        # Normalize inputs to polars
+        time_series_pl = self._to_polars(time_series)
+        steps_pl = self._to_polars(steps)
+
+        # Polars DataFrames are immutable so no .copy() needed
+        self._original_time_series_pl = time_series_pl
+        self._original_steps_pl = steps_pl
+
+        sliced_steps_pl, initial_voltage, start_idx, end_idx = self._apply_step_slice(
+            steps_pl, self._first_step, self._last_step
+        )
+        self._steps_pl = sliced_steps_pl
+        self._steps_pd_cache = None
+        self._initial_voltage = initial_voltage
         self._start_idx = start_idx
         self._end_idx = end_idx
 
         return time_series_pl.slice(start_idx, end_idx - start_idx)
 
-    def _init_without_steps(self, time_series, options):
+    def _init_without_steps(self, time_series):
         # Normalize to polars
-        if isinstance(time_series, dict):
-            time_series_pl = pl.DataFrame(time_series)
-        elif isinstance(time_series, pd.DataFrame):
-            time_series_pl = pl.from_pandas(time_series)
-        elif isinstance(time_series, pl.DataFrame):
-            time_series_pl = time_series
-        else:
-            time_series_pl = pl.DataFrame(time_series)
+        time_series_pl = self._to_polars(time_series)
 
         self._steps_pl = None
         self._steps_pd_cache = None
         self._original_time_series_pl = None
         self._original_steps_pl = None
-        self._first_step = None
-        self._last_step = None
         self._start_idx = 0
         self._end_idx = time_series_pl.height
-        self.initial_voltage = None
+        self._initial_voltage = None
 
         # Voltage column aliasing
         potential_ocp_column_names = [
@@ -1273,9 +1350,15 @@ class DataLoader:
     @classmethod
     def from_db(cls, measurement_id, options=None, use_cache=True, timeout=None):
         """
-        Load data from the Ionworks database.
+        Load data from the Ionworks database (lazy loading).
 
-        Loads steps if available, otherwise creates a steps-less DataLoader.
+        Data is fetched on demand: accessing ``.initial_voltage`` or ``.steps``
+        loads only the steps table (small payload) via
+        ``client.cell_measurement.steps(measurement_id)``. Accessing ``.data``
+        loads the time series as well via
+        ``client.cell_measurement.time_series(measurement_id)``, after steps
+        if needed for slicing. This allows reading e.g. initial voltage without
+        downloading the full time series.
 
         Parameters
         ----------
@@ -1311,8 +1394,18 @@ class DataLoader:
         instance._steps_pl = None  # noqa: SLF001
         instance._steps_pd_cache = None  # noqa: SLF001
 
-        # Lazy-load flags — data is fetched only when .data or .steps is accessed.
-        instance._lazy_db_pending = True  # noqa: SLF001
+        # Attributes that _setup / _init_with_steps normally initialise —
+        # set safe defaults so attribute access before lazy load doesn't error.
+        instance._data_steps_warned = False  # noqa: SLF001
+        instance._initial_voltage = None  # noqa: SLF001
+        instance._original_time_series_pl = None  # noqa: SLF001
+        instance._original_steps_pl = None  # noqa: SLF001
+        instance._start_idx = 0  # noqa: SLF001
+        instance._end_idx = 0  # noqa: SLF001
+
+        # Lazy-load flags — steps and time_series are fetched on demand.
+        instance._lazy_steps_pending = True  # noqa: SLF001
+        instance._lazy_time_series_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
         instance._lazy_options = options  # noqa: SLF001
         instance._lazy_timeout = timeout  # noqa: SLF001
