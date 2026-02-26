@@ -815,7 +815,7 @@ class DataLoader:
         computes cumulative net capacity (discharge/charge reset per step), then
         builds one OCP point (capacity, voltage) at the end of each such rest.
         If ``transforms["keep_first_ocp_point"]`` is True, prepends the first row
-        of the first GITT rest step as an extra OCP point. Replaces :attr:`data`
+        of the first GITT step as an extra OCP point. Replaces :attr:`data`
         with the OCP table and clears :attr:`steps`.
         """
         if self._steps_pl is None:
@@ -829,7 +829,10 @@ class DataLoader:
 
         keep_first = self._transforms.get("keep_first_ocp_point", False)
         first_row_idx = (
-            int(gitt_rest["Start index"][0]) - self._start_idx if keep_first else None
+            int(self._steps_pl.filter(pl.col("Label") == "GITT")["Start index"][0])
+            - self._start_idx
+            if keep_first
+            else None
         )
         self._transform_rest_steps_to_ocp(
             gitt_rest,

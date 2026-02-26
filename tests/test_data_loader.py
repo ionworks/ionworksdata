@@ -2304,7 +2304,7 @@ def test_gitt_to_ocp_transform():
 
 
 def test_gitt_to_ocp_keep_first_ocp_point():
-    """With keep_first_ocp_point=True, first OCP point is start of first GITT rest."""
+    """With keep_first_ocp_point=True, first OCP point is start of first GITT step."""
     time_series = pd.DataFrame(
         {
             "Time [s]": list(range(12)),
@@ -2366,11 +2366,8 @@ def test_gitt_to_ocp_keep_first_ocp_point():
     )
     assert len(loader.data) == 3  # 2 rest ends + 1 first point
     assert loader.data["Capacity [A.h]"][0] == 0.0
-    first_rest_start_voltage = time_series["Voltage [V]"].iloc[
-        int(steps.loc[steps["Step type"] == "Rest"].iloc[0]["Start index"])
-    ]
     np.testing.assert_almost_equal(
-        loader.data["Voltage [V]"][0], first_rest_start_voltage
+        loader.data["Voltage [V]"][0], time_series["Voltage [V]"][0]
     )
 
 
