@@ -747,9 +747,9 @@ def get_cumulative_net_capacity(
     else:
         discharge_cap, charge_cap = _calculate_capacity(data, options)
 
-    cum_discharge = np.cumsum(np.maximum(np.diff(discharge_cap, prepend=0), 0))
-    cum_charge = np.cumsum(np.maximum(np.diff(charge_cap, prepend=0), 0))
-    return cum_discharge - cum_charge
+    cumul_discharge = np.cumsum(np.maximum(np.diff(discharge_cap, prepend=0), 0))
+    cumul_charge = np.cumsum(np.maximum(np.diff(charge_cap, prepend=0), 0))
+    return cumul_discharge - cumul_charge
 
 
 def set_net_capacity(data: pl.DataFrame, options: dict | None = None) -> pl.DataFrame:
