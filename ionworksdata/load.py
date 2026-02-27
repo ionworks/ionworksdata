@@ -1033,8 +1033,9 @@ class DataLoader:
         float
             Cut-off for dUdQ
         """
-        q = self._data_pl["Capacity [A.h]"].to_numpy()
-        U = self._data_pl["Voltage [V]"].to_numpy()
+        data = self.data_pl
+        q = data["Capacity [A.h]"].to_numpy()
+        U = data["Voltage [V]"].to_numpy()
         dUdQ = abs(np.gradient(U, q))
         return self._calculate_differential_cutoff(
             q, U, dUdQ, method, show_plot, "Capacity [A.h]", "Voltage [V]", options
@@ -1066,8 +1067,9 @@ class DataLoader:
         float
             Cut-off for dQdU
         """
-        U = self._data_pl["Voltage [V]"].to_numpy()
-        q = self._data_pl["Capacity [A.h]"].to_numpy()
+        data = self.data_pl
+        U = data["Voltage [V]"].to_numpy()
+        q = data["Capacity [A.h]"].to_numpy()
         dQdU = abs(np.gradient(q, U))
         return self._calculate_differential_cutoff(
             U, q, dQdU, method, show_plot, "Voltage [V]", "Capacity [A.h]", options
