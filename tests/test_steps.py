@@ -590,7 +590,8 @@ def test_step_energy_always_positive():
 
 def test_summarize_ocp_capacity_only():
     """Test summarize on OCP-style data that has only Capacity [A.h] and Voltage [V] (no Time [s])."""
-    # OCP data from e.g. gitt_to_ocp has Capacity [A.h] and Voltage [V] only
+    # OCP data from e.g. gitt_to_ocp has Capacity [A.h] and Voltage [V] only.
+    # Without Current [A], single Capacity can't be split into discharge/charge.
     ocp_data = pd.DataFrame(
         {
             "Capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
@@ -602,8 +603,12 @@ def test_summarize_ocp_capacity_only():
     assert len(steps) == 1
     assert steps["Start index"].to_list() == [0]
     assert steps["End index"].to_list() == [4]
-    assert steps["Discharge capacity [A.h]"].to_list() == [0.2]  # 0.20 - 0.0
-    assert steps["Charge capacity [A.h]"].to_list() == [0.0]
+    # No Current [A] -> can't split capacity by direction -> null
+    assert steps["Discharge capacity [A.h]"].null_count() == 1
+    assert steps["Charge capacity [A.h]"].null_count() == 1
+    # Current/power stats null without Current [A]
+    assert steps["Mean current [A]"].null_count() == 1
+    assert steps["Mean power [W]"].null_count() == 1
     # Time-derived columns present as null when Time [s] not in input (DB gets NULL)
     assert "Start time [s]" in steps.columns
     assert "End time [s]" in steps.columns
@@ -611,6 +616,23 @@ def test_summarize_ocp_capacity_only():
     assert steps["Start time [s]"].null_count() == 1
     assert steps["End time [s]"].null_count() == 1
     assert steps["Duration [s]"].null_count() == 1
+
+
+def test_summarize_ocp_with_presplit_capacity():
+    """Test summarize with pre-split discharge/charge capacity but no current."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Discharge capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "Voltage [V]": [3.5, 3.45, 3.40, 3.35, 3.30],
+            "Step count": [0, 0, 0, 0, 0],
+        }
+    )
+    steps = iwdata.steps.summarize(data)
+    assert len(steps) == 1
+    assert steps["Discharge capacity [A.h]"].to_list() == [0.2]
+    assert steps["Charge capacity [A.h]"].to_list() == [0.0]
 
 
 def test_identify_accepts_stoichiometry_only():
