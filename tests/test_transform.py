@@ -1,3 +1,4 @@
+import numpy as np
 import polars as pl
 import pytest
 
@@ -216,6 +217,80 @@ def test_set_net_capacity():
     )
     assert "Capacity [mA.h.cm-2]" in out4.columns
     assert out4["Capacity [mA.h.cm-2]"].to_list() == [0.0, 1.0, 1.5]
+
+    # Test case 5: Net is per-row (discharge - charge), not cumulative across resets
+    # Discharge/charge reset to zero at step boundary; net must reset too
+    data5 = pl.DataFrame(
+        {
+            "Discharge capacity [A.h]": [0.0, 0.5, 0.0, 0.0, 0.5, 1.0],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    )
+    out5 = iwdata.transform.set_net_capacity(data5)
+    # Result is discharge - charge per row (no abs); resets when discharge resets
+    np.testing.assert_allclose(
+        out5["Capacity [A.h]"].to_numpy(), [0.0, 0.5, 0.0, 0.0, 0.5, 1.0]
+    )
+
+
+def test_get_cumulative_net_capacity_basic():
+    """Cumulative net capacity (no reset) matches step-wise sum of (end - start)."""
+    # Two discharge steps with rest in between; capacity resets per step
+    data = pl.DataFrame(
+        {
+            "Discharge capacity [A.h]": [
+                0.0,
+                0.01,
+                0.02,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.01,
+                0.02,
+            ],
+            "Charge capacity [A.h]": [0.0] * 9,
+        }
+    )
+    out = iwdata.transform.get_cumulative_net_capacity(data)
+    expected = [0.0, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02, 0.03, 0.04]
+    np.testing.assert_allclose(out, expected)
+
+
+def test_get_cumulative_net_capacity_single_step():
+    """Single step: cumulative equals in-step growth from zero."""
+    data = pl.DataFrame(
+        {
+            "Discharge capacity [A.h]": [0.0, 0.1, 0.2, 0.3],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0, 0.0],
+        }
+    )
+    out = iwdata.transform.get_cumulative_net_capacity(data)
+    np.testing.assert_allclose(out, [0.0, 0.1, 0.2, 0.3])
+
+
+def test_get_cumulative_net_capacity_discharge_minus_charge():
+    """Cumulative net capacity is discharge - charge (can be negative for charge)."""
+    data = pl.DataFrame(
+        {
+            "Discharge capacity [A.h]": [0.0, 0.0, 0.0],
+            "Charge capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    out = iwdata.transform.get_cumulative_net_capacity(data)
+    np.testing.assert_allclose(out, [0.0, -0.1, -0.2])
+
+
+def test_get_cumulative_net_capacity_two_rows_one_step():
+    """Two rows in one step: cumulative at end equals net at end."""
+    data = pl.DataFrame(
+        {
+            "Discharge capacity [A.h]": [0.0, 0.1],
+            "Charge capacity [A.h]": [0.0, 0.0],
+        }
+    )
+    out = iwdata.transform.get_cumulative_net_capacity(data)
+    np.testing.assert_allclose(out, [0.0, 0.1])
 
 
 def test_set_nominal_soc():
