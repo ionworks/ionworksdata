@@ -713,6 +713,45 @@ def _calculate_net_capacity(
     return discharge_cap - charge_cap
 
 
+def get_cumulative_net_capacity(
+    data: pl.DataFrame,
+    options: dict | None = None,
+) -> np.ndarray:
+    """
+    Cumulative net capacity (no reset) at each row.
+
+    Discharge/charge capacity columns reset to 0 at each step boundary.
+    We recover true cumulative values by diffing each column, clipping
+    negative diffs (the resets) to zero, and cumsumming. The result is
+    cumulative discharge minus cumulative charge.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Data with discharge/charge capacity columns (or current for integration).
+    options : dict, optional
+        Passed to get_current_and_capacity_units / _calculate_capacity.
+
+    Returns
+    -------
+    np.ndarray
+        Cumulative net capacity at each row, same length as data.
+    """
+    _, capacity_units = iwdata.util.get_current_and_capacity_units(options)
+    discharge_cap_col = f"Discharge capacity [{capacity_units}]"
+    charge_cap_col = f"Charge capacity [{capacity_units}]"
+
+    if discharge_cap_col in data.columns and charge_cap_col in data.columns:
+        discharge_cap = data.get_column(discharge_cap_col).to_numpy()
+        charge_cap = data.get_column(charge_cap_col).to_numpy()
+    else:
+        discharge_cap, charge_cap = _calculate_capacity(data, options)
+
+    cumul_discharge = np.cumsum(np.maximum(np.diff(discharge_cap, prepend=0), 0))
+    cumul_charge = np.cumsum(np.maximum(np.diff(charge_cap, prepend=0), 0))
+    return cumul_discharge - cumul_charge
+
+
 def set_net_capacity(data: pl.DataFrame, options: dict | None = None) -> pl.DataFrame:
     """
     Calculate the net capacity for the data and assign it to a new column called
