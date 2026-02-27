@@ -5,6 +5,11 @@
 # to the test method
 # See https://docs.pytest.org/en/stable/fixture.html for more information
 
+# Use non-interactive backend for tests (avoids crash when no display, e.g. CI/macOS)
+import matplotlib
+
+matplotlib.use("Agg")
+
 import tempfile
 from pathlib import Path
 
@@ -17,6 +22,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "filterwarnings",
         "ignore:CSV reader does not support reading start time from file:UserWarning",
+    )
+    # Ignore Polars migration warnings from DataLoader
+    config.addinivalue_line(
+        "filterwarnings",
+        "ignore:DataLoader.data and .steps now return Polars DataFrames:FutureWarning",
     )
 
 

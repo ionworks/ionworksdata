@@ -174,7 +174,8 @@ def test_cycling():
     options = {"cell_metadata": {"Nominal cell capacity [A.h]": 1}}
     steps_labeled = iwdata.steps.label_cycling(steps, options=options)
     pd.testing.assert_frame_equal(
-        steps_labeled.sort_index(axis=1), steps_expected.sort_index(axis=1)
+        steps_labeled.to_pandas().sort_index(axis=1),
+        steps_expected.sort_index(axis=1),
     )
     assert iwdata.steps.validate(steps_labeled, "Cycling")
 
@@ -198,7 +199,8 @@ def test_gitt():
     options = {"cell_metadata": {"Nominal cell capacity [A.h]": 1}}
     steps_labeled = iwdata.steps.label_pulse(steps, options=options)
     pd.testing.assert_frame_equal(
-        steps_labeled.sort_index(axis=1), steps_expected.sort_index(axis=1)
+        steps_labeled.to_pandas().sort_index(axis=1),
+        steps_expected.sort_index(axis=1),
     )
     assert iwdata.steps.validate(steps_labeled, "GITT")
 
@@ -220,7 +222,9 @@ def test_hppt():
     options = {"cell_metadata": {"Nominal cell capacity [A.h]": 1}}
     steps_labeled = iwdata.steps.label_pulse(steps, options=options)
     pd.testing.assert_frame_equal(
-        steps_labeled.sort_index(axis=1), steps_expected.sort_index(axis=1)
+        steps_labeled.to_pandas().sort_index(axis=1),
+        steps_expected.sort_index(axis=1),
+        check_dtype=False,
     )
     assert iwdata.steps.validate(steps_labeled, "HPPT")
 
@@ -247,7 +251,7 @@ def test_eis():
     ]
     steps_expected["Group number"] = [0, 0, np.nan, np.nan, 1, 1, np.nan, np.nan]
     steps_labeled = iwdata.steps.label_eis(steps)
-    pd.testing.assert_frame_equal(steps_labeled, steps_expected)
+    pd.testing.assert_frame_equal(steps_labeled.to_pandas(), steps_expected)
     assert iwdata.steps.validate(steps_labeled, "EIS")
 
 
@@ -273,7 +277,9 @@ def test_cycling_invalid():
     options = {"cell_metadata": {"Nominal cell capacity [A.h]": 1}}
     steps_labeled = iwdata.steps.label_cycling(steps, options=options)
     pd.testing.assert_frame_equal(
-        steps_labeled.sort_index(axis=1), steps_expected.sort_index(axis=1)
+        steps_labeled.to_pandas().sort_index(axis=1),
+        steps_expected.sort_index(axis=1),
+        check_dtype=False,
     )
     assert not iwdata.steps.validate(steps_labeled, "Cycling")
 
@@ -294,7 +300,7 @@ def test_annotate():
     time_series_expected = time_series.copy()
     time_series_expected["Extra column"] = ["a"] * 4 + ["b"] * 2 + ["c"] * 3
     time_series_labeled = iwdata.steps.annotate(time_series, steps, ["Extra column"])
-    pd.testing.assert_frame_equal(time_series_labeled, time_series_expected)
+    pd.testing.assert_frame_equal(time_series_labeled.to_pandas(), time_series_expected)
 
 
 def test_annotate_with_polars():
@@ -322,16 +328,19 @@ def test_annotate_with_polars():
         time_series_pl, steps_pl, ["Extra column"]
     )
 
-    # Test with Pandas input
-    time_series_labeled_pd = iwdata.steps.annotate(time_series, steps, ["Extra column"])
+    # Test with Pandas input (annotate always returns Polars)
+    time_series_labeled_pd_input = iwdata.steps.annotate(
+        time_series, steps, ["Extra column"]
+    )
 
-    # Polars input should return Polars, Pandas should return Pandas
+    # Both should return Polars
     assert isinstance(time_series_labeled_pl, pl.DataFrame)
-    assert isinstance(time_series_labeled_pd, pd.DataFrame)
+    assert isinstance(time_series_labeled_pd_input, pl.DataFrame)
 
-    # Results should be identical when converted to same type
+    # Results should be identical
     pd.testing.assert_frame_equal(
-        time_series_labeled_pl.to_pandas(), time_series_labeled_pd
+        time_series_labeled_pl.to_pandas(),
+        time_series_labeled_pd_input.to_pandas(),
     )
 
 
@@ -519,11 +528,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 0, 1, 1, 1],
         }
     )
-    steps1 = iwdata.steps.summarize(data1).to_pandas()
+    steps1 = iwdata.steps.summarize(data1)
     if "Discharge energy [W.h]" in steps1.columns:
-        assert all(steps1["Discharge energy [W.h]"] >= 0)
+        non_null = steps1["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps1.columns:
-        assert all(steps1["Charge energy [W.h]"] >= 0)
+        non_null = steps1["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 2: Pure charge steps
     data2 = pd.DataFrame(
@@ -534,11 +545,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 0, 1, 1, 1],
         }
     )
-    steps2 = iwdata.steps.summarize(data2).to_pandas()
+    steps2 = iwdata.steps.summarize(data2)
     if "Discharge energy [W.h]" in steps2.columns:
-        assert all(steps2["Discharge energy [W.h]"] >= 0)
+        non_null = steps2["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps2.columns:
-        assert all(steps2["Charge energy [W.h]"] >= 0)
+        non_null = steps2["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 3: Mixed discharge and charge steps
     data3 = pd.DataFrame(
@@ -549,11 +562,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 1, 1, 2, 2, 3, 3],
         }
     )
-    steps3 = iwdata.steps.summarize(data3).to_pandas()
+    steps3 = iwdata.steps.summarize(data3)
     if "Discharge energy [W.h]" in steps3.columns:
-        assert all(steps3["Discharge energy [W.h]"] >= 0)
+        non_null = steps3["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps3.columns:
-        assert all(steps3["Charge energy [W.h]"] >= 0)
+        non_null = steps3["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 4: With rest steps (zero energy)
     data4 = pd.DataFrame(
@@ -564,11 +579,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 1, 1, 1, 1],
         }
     )
-    steps4 = iwdata.steps.summarize(data4).to_pandas()
+    steps4 = iwdata.steps.summarize(data4)
     if "Discharge energy [W.h]" in steps4.columns:
-        assert all(steps4["Discharge energy [W.h]"] >= 0)
+        non_null = steps4["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps4.columns:
-        assert all(steps4["Charge energy [W.h]"] >= 0)
+        non_null = steps4["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
 
 def test_summarize_ocp_capacity_only():

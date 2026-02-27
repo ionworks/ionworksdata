@@ -13,7 +13,7 @@ from ionworksdata.logger import logger
 def label_eis(
     steps: pd.DataFrame | pl.DataFrame,
     options: dict | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Label EIS steps.
 
@@ -30,31 +30,43 @@ def label_eis(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         The dataframe with the updated "Label" and "Group number" columns.
     """
-    # Convert to pandas if needed
-    if isinstance(steps, pl.DataFrame):
-        steps = steps.to_pandas()
-    steps = steps.copy()
+    if isinstance(steps, pd.DataFrame):
+        steps_pl = pl.from_pandas(steps)
+    else:
+        steps_pl = steps.clone()
 
-    # Find indices of all EIS steps
-    eis_idxs = steps.index[steps["Step type"] == "EIS"]
-    if len(eis_idxs) == 0:
+    eis_steps = steps_pl.filter(pl.col("Step type") == "EIS")
+    if eis_steps.height == 0:
         logger.warning(
             "Insufficient EIS steps found in the data, unable to add labels."
         )
-        return steps
+        return steps_pl
 
-    steps.loc[eis_idxs, "Label"] = "EIS"
+    eis_step_nums = eis_steps["Step count"]
+    gaps = eis_step_nums.diff() > 1
+    group_nums = gaps.cum_sum()
+    step_to_group = dict(zip(eis_step_nums.to_list(), group_nums.to_list()))
+    orig_groups = (
+        steps_pl["Group number"].to_list()
+        if "Group number" in steps_pl.columns
+        else [None] * steps_pl.height
+    )
 
-    # Label contiguous blocks of EIS steps with increasing group numbers
-    if len(eis_idxs) > 0:
-        # Get step numbers for EIS steps
-        eis_step_nums = steps.loc[eis_idxs, "Step count"]
-        # Find gaps in step numbers to identify separate groups
-        gaps = eis_step_nums.diff() > 1
-        # Cumulative sum of gaps gives group numbers
-        steps.loc[eis_idxs, "Group number"] = gaps.cumsum()
-
-    return steps
+    steps_pl = steps_pl.with_columns(
+        pl.when(pl.col("Step type") == "EIS")
+        .then(pl.lit("EIS"))
+        .otherwise(pl.col("Label"))
+        .alias("Label")
+    )
+    group_series = pl.Series(
+        "Group number",
+        [
+            step_to_group.get(s, orig_groups[i])
+            for i, s in enumerate(steps_pl["Step count"].to_list())
+        ],
+    )
+    steps_pl = steps_pl.with_columns(group_series)
+    return steps_pl

@@ -3,6 +3,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import polars as pl
 import pybamm
 import pytest
 from scipy.signal import savgol_filter
@@ -15,7 +16,7 @@ def test_get_item():
     data_loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps")
     )
-    assert data_loader["Voltage [V]"].equals(data_loader.data["Voltage [V]"])
+    assert data_loader.data["Voltage [V]"].equals(data_loader["Voltage [V]"])
 
 
 def test_ocp_data_loader():
@@ -24,8 +25,8 @@ def test_ocp_data_loader():
     assert isinstance(data_loader, iwdata.OCPDataLoader)
     assert "Voltage [V]" in data_loader.data.columns
     assert "Capacity [A.h]" in data_loader.data.columns
-    assert data_loader["Voltage [V]"].equals(data["Voltage [V]"])
-    assert data_loader["Capacity [A.h]"].equals(data["Capacity [A.h]"])
+    assert data_loader.data["Voltage [V]"].to_pandas().equals(data["Voltage [V]"])
+    assert data_loader.data["Capacity [A.h]"].to_pandas().equals(data["Capacity [A.h]"])
 
 
 def test_load_data():
@@ -36,8 +37,15 @@ def test_load_data():
     true_full_data = pd.read_csv(
         Path("tests/test_data/cccv-synthetic-with-steps/time_series.csv")
     )
-    assert data_loader.data.columns.tolist() == true_full_data.columns.tolist()
-    assert true_full_data.equals(data_loader.data)
+    loader_pd = data_loader.data.to_pandas()
+    # Polars read_csv may name first column '' vs pandas 'Unnamed: 0'
+    if len(loader_pd.columns) and loader_pd.columns[0] == "":
+        loader_pd = loader_pd.rename(columns={"": "Unnamed: 0"})
+    assert list(loader_pd.columns) == true_full_data.columns.tolist()
+    pd.testing.assert_frame_equal(
+        loader_pd.sort_index(axis=1),
+        true_full_data.sort_index(axis=1),
+    )
     assert data_loader.initial_voltage == true_full_data["Voltage [V]"].iloc[0]
     assert isinstance(data_loader, iwdata.DataLoader)
 
@@ -48,9 +56,9 @@ def test_load_data():
             "last_step": 3,
         },
     )
+    time_s = data_loader_steps_2_3.data["Time [s]"]
     np.testing.assert_allclose(
-        data_loader_steps_2_3.data["Time [s]"].iloc[-1]
-        - data_loader_steps_2_3.data["Time [s]"].iloc[0],
+        float(time_s[-1] - time_s[0]),
         data_loader_steps_2_3.steps["Duration [s]"].sum(),
     )
     all_steps = pd.read_csv(Path("tests/test_data/cccv-synthetic-with-steps/steps.csv"))
@@ -112,7 +120,7 @@ def test_generate_interpolant():
     assert sol["Current [A]"](t=3600 + 1e-9) == 5.0
     # Make sure we are doing something productive (reducing tpts)
     assert len(interpolant.x[0]) == 114
-    assert len(data_loader.data["Time [s]"]) == 563
+    assert data_loader.data["Time [s]"].len() == 563
 
 
 def test_filter_data():
@@ -134,17 +142,20 @@ def test_filter_data():
         {"first_step": 2, "last_step": 4},
     )
     filtered_voltage_manual = savgol_filter(
-        data_loader_unfiltered.data["Voltage [V]"], window_length=5, polyorder=2
+        data_loader_unfiltered.data["Voltage [V]"].to_numpy(),
+        window_length=5,
+        polyorder=2,
     )
 
     # Make sure that the filtered data is filtered and that the filtered data is different from the raw data
     np.testing.assert_allclose(
-        filtered_voltage_manual, data_loader_filtered.data["Voltage [V]"]
+        filtered_voltage_manual,
+        data_loader_filtered.data["Voltage [V]"].to_numpy(),
     )
     with pytest.raises(AssertionError):
         np.testing.assert_allclose(
-            data_loader_unfiltered.data["Voltage [V]"],
-            data_loader_filtered.data["Voltage [V]"],
+            data_loader_unfiltered.data["Voltage [V]"].to_numpy(),
+            data_loader_filtered.data["Voltage [V]"].to_numpy(),
         )
 
 
@@ -164,22 +175,89 @@ def test_interpolate_data():
     )
 
     np.testing.assert_allclose(
-        data_loader.data["Time [s]"],
+        data_loader.data["Time [s]"].to_numpy(),
         np.arange(
-            data_loader_raw.data["Time [s]"].min(),
-            data_loader_raw.data["Time [s]"].max(),
+            float(data_loader_raw.data["Time [s]"].min()),
+            float(data_loader_raw.data["Time [s]"].max()),
             0.1,
         ),
     )
 
     np.testing.assert_allclose(
-        data_loader.data["Voltage [V]"],
+        data_loader.data["Voltage [V]"].to_numpy(),
         np.interp(
-            data_loader.data["Time [s]"],
-            data_loader_raw.data["Time [s]"],
-            data_loader_raw.data["Voltage [V]"],
+            data_loader.data["Time [s]"].to_numpy(),
+            data_loader_raw.data["Time [s]"].to_numpy(),
+            data_loader_raw.data["Voltage [V]"].to_numpy(),
         ),
     )
+
+
+def test_interpolate_downsample_fixed_interval():
+    """interpolate with a float downsamples (or upsamples) to a fixed regular time interval."""
+    # Dense irregular time series (many points, uneven spacing)
+    rng = np.random.default_rng(42)
+    n_raw = 200
+    t_raw = np.sort(rng.uniform(0, 10, size=n_raw))
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": t_raw,
+            "Voltage [V]": 3.5 + 0.1 * np.sin(t_raw),
+            "Current [A]": np.ones(n_raw),
+        }
+    )
+    steps = pd.DataFrame(
+        {"Start index": [0], "End index": [n_raw - 1], "Start voltage [V]": [3.5]}
+    )
+
+    # Downsample to regular 1.0 s interval (fewer points)
+    interval = 1.0
+    loader = iwdata.DataLoader(time_series, steps, interpolate=interval)
+    t = loader.data["Time [s]"].to_numpy()
+
+    # Fixed regular interval: all steps equal to interval (within float tolerance)
+    dt = np.diff(t)
+    assert dt.size > 0
+    np.testing.assert_allclose(dt, interval, atol=1e-10)
+    # Downsampling: fewer points than raw
+    assert len(loader.data) < n_raw
+    # Time range preserved (starts at min, ends before max as in np.arange)
+    assert t[0] == time_series["Time [s]"].min()
+    assert t[-1] < time_series["Time [s]"].max()
+    assert t[-1] >= time_series["Time [s]"].max() - interval
+
+    # Interpolated values match np.interp on the same knots
+    expected_v = np.interp(
+        t, time_series["Time [s]"].values, time_series["Voltage [V]"].values
+    )
+    np.testing.assert_allclose(loader.data["Voltage [V]"].to_numpy(), expected_v)
+
+
+def test_interpolate_data_skips_object_columns():
+    """interpolate_data skips non-numeric columns and does not raise."""
+    time_series = pl.DataFrame(
+        {
+            "Time [s]": np.linspace(0, 1000, 101),
+            "Voltage [V]": 3.5 - 0.001 * np.linspace(0, 1000, 101),
+            "Current [A]": np.ones(101),
+            "Label": ["step_1"] * 50 + ["step_2"] * 51,
+        }
+    )
+    result = iwdata.DataLoader.interpolate_data(time_series, 10.0)
+    assert "Time [s]" in result.columns
+    assert "Voltage [V]" in result.columns
+    assert "Current [A]" in result.columns
+    assert "Label" not in result.columns
+    np.testing.assert_allclose(
+        result["Voltage [V]"].to_numpy(),
+        np.interp(
+            result["Time [s]"].to_numpy(),
+            time_series["Time [s]"].to_numpy(),
+            time_series["Voltage [V]"].to_numpy(),
+        ),
+    )
+    dt = np.diff(result["Time [s]"].to_numpy())
+    np.testing.assert_allclose(dt, 10.0, atol=1e-10)
 
 
 def test_get_step():
@@ -190,10 +268,10 @@ def test_get_step():
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 1, "last_step": 2},
     )
-    full_data = data_loader_full.data
-    full_data = full_data[full_data["Step count"].isin([1, 2])]
+    full_data = data_loader_full.data.filter(pl.col("Step count").is_in([1, 2]))
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), full_data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        full_data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -208,10 +286,10 @@ def test_get_step_from_cycle():
             "last_step": last_step_from_cycle(1),
         },
     )
-    full_data = data_loader_full.data
-    full_data = full_data[full_data["Cycle count"] == 1]
+    full_data = data_loader_full.data.filter(pl.col("Cycle count") == 1)
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), full_data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        full_data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -395,18 +473,17 @@ def test_data_loader_roundtrip_filter_data_true():
     )
 
     # Check that both DataLoaders produce same data values
-    # (indices will differ: original vs 0-based, so compare values only)
     pd.testing.assert_frame_equal(
-        data_loader1.data.reset_index(drop=True),
-        data_loader2.data.reset_index(drop=True),
+        data_loader1.data.to_pandas(),
+        data_loader2.data.to_pandas(),
     )
     # For steps, Start/End index will differ but other columns should match
     steps_cols_to_compare = [
         c for c in data_loader1.steps.columns if c not in ["Start index", "End index"]
     ]
     pd.testing.assert_frame_equal(
-        data_loader1.steps[steps_cols_to_compare].reset_index(drop=True),
-        data_loader2.steps[steps_cols_to_compare].reset_index(drop=True),
+        data_loader1.steps.select(steps_cols_to_compare).to_pandas(),
+        data_loader2.steps.select(steps_cols_to_compare).to_pandas(),
         check_dtype=False,
     )
 
@@ -457,8 +534,12 @@ def test_data_loader_roundtrip_filter_data_false():
     )
 
     # Check that both DataLoaders produce same data
-    pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
-    pd.testing.assert_frame_equal(data_loader1.steps, data_loader2.steps)
+    pd.testing.assert_frame_equal(
+        data_loader1.data.to_pandas(), data_loader2.data.to_pandas()
+    )
+    pd.testing.assert_frame_equal(
+        data_loader1.steps.to_pandas(), data_loader2.steps.to_pandas()
+    )
 
 
 def test_ocp_data_loader_to_config_basic():
@@ -551,7 +632,9 @@ def test_ocp_data_loader_roundtrip():
         config["data"], steps=None, **config.get("options", {})
     )
 
-    pd.testing.assert_frame_equal(data_loader1.data, data_loader2.data)
+    pd.testing.assert_frame_equal(
+        data_loader1.data.to_pandas(), data_loader2.data.to_pandas()
+    )
 
 
 def test_ocp_data_loader_copy():
@@ -563,12 +646,12 @@ def test_ocp_data_loader_copy():
     assert copy is not original
     assert isinstance(copy, iwdata.DataLoader)
 
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
     assert copy.data is not original.data
 
     assert list(original.data.columns) == list(copy.data.columns)
     for col in original.data.columns:
-        pd.testing.assert_series_equal(original.data[col], copy.data[col])
+        assert original.data[col].equals(copy.data[col])
 
 
 def test_data_loader_copy():
@@ -584,11 +667,11 @@ def test_data_loader_copy():
     assert isinstance(copy, iwdata.DataLoader)
 
     # Verify data is copied
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
     assert copy.data is not original.data
 
     # Verify steps are copied
-    pd.testing.assert_frame_equal(original.steps, copy.steps)
+    pd.testing.assert_frame_equal(original.steps.to_pandas(), copy.steps.to_pandas())
     assert copy.steps is not original.steps
 
     # Verify additional attributes are copied
@@ -604,13 +687,17 @@ def test_copy_independence():
     )
     copy_dl = original_dl.copy()
 
-    # Modify copy - use the first valid index
-    first_idx = copy_dl.data.index[0]
-    copy_dl.data.loc[first_idx, "Voltage [V]"] = 999.0
+    # Modify copy (Polars: immutable, so replace with new frame with first row Voltage changed)
+    copy_dl.data = copy_dl.data.with_columns(
+        pl.when(pl.int_range(0, copy_dl.data.height) == 0)
+        .then(pl.lit(999.0))
+        .otherwise(pl.col("Voltage [V]"))
+        .alias("Voltage [V]")
+    )
     copy_dl.initial_voltage = 999.0
 
     # Verify original is unchanged
-    assert original_dl.data.loc[first_idx, "Voltage [V]"] != 999.0
+    assert original_dl.data["Voltage [V]"][0] != 999.0
     assert original_dl.initial_voltage != 999.0
 
 
@@ -635,7 +722,7 @@ def test_copy_with_filters_and_interpolation():
     copy = original.copy()
 
     # Verify filtered data is preserved
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
 
     # Test with interpolation
     original_interp = iwdata.DataLoader.from_local(
@@ -649,10 +736,12 @@ def test_copy_with_filters_and_interpolation():
     copy_interp = original_interp.copy()
 
     # Verify interpolated data is preserved
-    pd.testing.assert_frame_equal(original_interp.data, copy_interp.data)
+    pd.testing.assert_frame_equal(
+        original_interp.data.to_pandas(), copy_interp.data.to_pandas()
+    )
 
     # Verify time points are interpolated
-    time_diff = np.diff(original_interp.data["Time [s]"])
+    time_diff = np.diff(original_interp.data["Time [s]"].to_numpy())
     assert np.allclose(time_diff, 0.1, atol=1e-10)
 
 
@@ -696,8 +785,8 @@ def test_get_step_with_sql_query():
     )
 
     # Verify we get cycle 1 data
-    assert data_loader.steps["Cycle count"].iloc[0] == 1
-    assert data_loader.steps["Cycle count"].iloc[-1] == 1
+    assert data_loader.steps["Cycle count"][0] == 1
+    assert data_loader.steps["Cycle count"][-1] == 1
 
     # Test with integer step indices
     data_loader_int = iwdata.DataLoader.from_local(
@@ -706,8 +795,8 @@ def test_get_step_with_sql_query():
     )
 
     # Verify correct steps are loaded
-    assert data_loader_int.steps["Step count"].iloc[0] == 2
-    assert data_loader_int.steps["Step count"].iloc[-1] == 4
+    assert data_loader_int.steps["Step count"][0] == 2
+    assert data_loader_int.steps["Step count"][-1] == 4
 
 
 def test_get_step_with_explicit_sql():
@@ -722,8 +811,8 @@ def test_get_step_with_explicit_sql():
     )
 
     # Verify we get step 3 as the first step
-    assert data_loader.steps["Step count"].iloc[0] == 3
-    assert data_loader.steps["Step count"].iloc[-1] == 5
+    assert data_loader.steps["Step count"][0] == 3
+    assert data_loader.steps["Step count"][-1] == 5
 
     # Test with explicit SQL query for cycle 0
     data_loader_cycle = iwdata.DataLoader.from_local(
@@ -735,8 +824,8 @@ def test_get_step_with_explicit_sql():
     )
 
     # Verify we get cycle 0 data
-    assert data_loader_cycle.steps["Cycle count"].iloc[0] == 0
-    assert data_loader_cycle.steps["Cycle count"].iloc[-1] == 0
+    assert data_loader_cycle.steps["Cycle count"][0] == 0
+    assert data_loader_cycle.steps["Cycle count"][-1] == 0
 
 
 def test_get_step_with_integer():
@@ -754,10 +843,12 @@ def test_get_step_with_integer():
 
     # Should produce identical results
     pd.testing.assert_frame_equal(
-        data_loader.data.sort_index(axis=1), data_loader_dict.data.sort_index(axis=1)
+        data_loader.data.to_pandas().sort_index(axis=1),
+        data_loader_dict.data.to_pandas().sort_index(axis=1),
     )
     pd.testing.assert_frame_equal(
-        data_loader.steps.sort_index(axis=1), data_loader_dict.steps.sort_index(axis=1)
+        data_loader.steps.to_pandas().sort_index(axis=1),
+        data_loader_dict.steps.to_pandas().sort_index(axis=1),
     )
 
 
@@ -835,12 +926,14 @@ def test_dataloader_with_polars_input():
     loader_polars = iwdata.DataLoader(time_series_pl, steps_pl)
     loader_pandas = iwdata.DataLoader(time_series_pd, steps_pd)
 
-    # Results should be identical (both use pandas internally)
+    # Results should be identical (both stored as polars internally)
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
     pd.testing.assert_frame_equal(
-        loader_polars.steps.sort_index(axis=1), loader_pandas.steps.sort_index(axis=1)
+        loader_polars.steps.to_pandas().sort_index(axis=1),
+        loader_pandas.steps.to_pandas().sort_index(axis=1),
     )
 
 
@@ -865,20 +958,21 @@ def test_dataloader_with_mixed_input():
 
     # Both should work and produce same results
     pd.testing.assert_frame_equal(
-        loader1.data.sort_index(axis=1), loader2.data.sort_index(axis=1)
+        loader1.data.to_pandas().sort_index(axis=1),
+        loader2.data.to_pandas().sort_index(axis=1),
     )
 
 
 def test_from_local_with_polars():
-    """Test from_local with use_polars=True."""
-    # Load with pandas (default)
-    loader_pandas = iwdata.DataLoader.from_local(
+    """Test from_local with use_polars=True (default) and use_polars=False."""
+    # Load with polars (default)
+    loader_polars = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps")
     )
 
-    # Load with polars
-    loader_polars = iwdata.DataLoader.from_local(
-        Path("tests/test_data/cccv-synthetic-with-steps"), use_polars=True
+    # Load with pandas read path
+    loader_pandas = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"), use_polars=False
     )
 
     # Results should be similar (column names might differ slightly for unnamed columns)
@@ -886,12 +980,13 @@ def test_from_local_with_polars():
     assert loader_pandas.data.shape == loader_polars.data.shape
     assert loader_pandas.steps.shape == loader_polars.steps.shape
 
-    # Check that key columns have the same values
+    # Check that key columns have the same values (use tolerance for float differences
+    # between pl.read_csv and pd.read_csv)
     for col in ["Time [s]", "Voltage [V]", "Current [A]"]:
-        pd.testing.assert_series_equal(
-            loader_pandas.data[col].reset_index(drop=True),
-            loader_polars.data[col].reset_index(drop=True),
-            check_names=False,
+        np.testing.assert_allclose(
+            loader_pandas.data[col].to_numpy(),
+            loader_polars.data[col].to_numpy(),
+            err_msg=f"Column {col} differs",
         )
 
 
@@ -913,13 +1008,14 @@ def test_ocp_dataloader_with_polars():
     loader_polars = iwdata.OCPDataLoader(data_pl)
 
     # Results should be identical
-    pd.testing.assert_frame_equal(loader_pandas.data, loader_polars.data)
+    pd.testing.assert_frame_equal(
+        loader_pandas.data.to_pandas(), loader_polars.data.to_pandas()
+    )
 
 
 def test_generic_dataloader_with_polars():
-    """Test GenericDataLoader with Polars input."""
+    """Test DataLoader with Polars input (no-steps mode)."""
     import polars as pl
-    from ionworksdata.load import GenericDataLoader
 
     data_pd = pd.DataFrame(
         {
@@ -931,11 +1027,13 @@ def test_generic_dataloader_with_polars():
     data_pl = pl.from_pandas(data_pd)
 
     # Create loaders with both types
-    loader_pandas = GenericDataLoader(data_pd)
-    loader_polars = GenericDataLoader(data_pl)
+    loader_pandas = iwdata.DataLoader(data_pd)
+    loader_polars = iwdata.DataLoader(data_pl)
 
     # Results should be identical
-    pd.testing.assert_frame_equal(loader_pandas.data, loader_polars.data)
+    pd.testing.assert_frame_equal(
+        loader_pandas.data.to_pandas(), loader_polars.data.to_pandas()
+    )
 
 
 def test_dataloader_polars_with_step_selection():
@@ -962,7 +1060,8 @@ def test_dataloader_polars_with_step_selection():
 
     # Results should be identical
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
 
 
@@ -993,12 +1092,13 @@ def test_dataloader_polars_with_sql_query():
 
     # Results should be identical
     pd.testing.assert_frame_equal(
-        loader_polars.data.sort_index(axis=1), loader_pandas.data.sort_index(axis=1)
+        loader_polars.data.to_pandas().sort_index(axis=1),
+        loader_pandas.data.to_pandas().sort_index(axis=1),
     )
 
 
 def test_dataloader_from_db():
-    """Test DataLoader.from_db loads data from ionworks-api."""
+    """Test DataLoader.from_db loads data from ionworks-api (steps + time_series)."""
     from unittest.mock import MagicMock, patch
 
     time_series = pd.DataFrame(
@@ -1013,15 +1113,13 @@ def test_dataloader_from_db():
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         data_loader = iwdata.DataLoader.from_db(
@@ -1030,7 +1128,10 @@ def test_dataloader_from_db():
         # Trigger lazy load by accessing data.
         _ = data_loader.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with(
+    mock_client.cell_measurement.steps.assert_called_once_with(
+        "test-measurement-id-123"
+    )
+    mock_client.cell_measurement.time_series.assert_called_once_with(
         "test-measurement-id-123"
     )
     assert isinstance(data_loader, iwdata.DataLoader)
@@ -1038,7 +1139,7 @@ def test_dataloader_from_db():
 
 
 def test_ocp_dataloader_from_db():
-    """Test OCPDataLoader.from_db loads data from ionworks-api."""
+    """Test OCPDataLoader.from_db loads data from ionworks-api (no steps)."""
     from unittest.mock import MagicMock, patch
 
     time_series = pd.DataFrame(
@@ -1048,25 +1149,26 @@ def test_ocp_dataloader_from_db():
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = None
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = None
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         data_loader = iwdata.OCPDataLoader.from_db("test-ocp-id-456", use_cache=False)
         # Trigger lazy load by accessing data.
         _ = data_loader.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-ocp-id-456")
+    mock_client.cell_measurement.steps.assert_called_once_with("test-ocp-id-456")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-ocp-id-456")
     assert isinstance(data_loader, iwdata.DataLoader)
     assert data_loader._measurement_id == "test-ocp-id-456"  # noqa: SLF001
 
 
 def _make_mock_client(time_series, steps):
-    """Helper to build a mock Ionworks client for from_db lazy-loading tests."""
+    """Helper to build a mock Ionworks client for from_db lazy-loading tests.
+
+    Configures both separate endpoints (steps, time_series) and legacy detail().
+    """
     from unittest.mock import MagicMock
 
     mock_measurement_detail = MagicMock()
@@ -1074,6 +1176,8 @@ def _make_mock_client(time_series, steps):
     mock_measurement_detail.steps = steps
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
     return mock_client
 
 
@@ -1091,6 +1195,7 @@ def _make_test_data():
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
     return time_series, steps
@@ -1105,7 +1210,8 @@ def test_dataloader_from_db_lazy_no_fetch_on_creation():
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         iwdata.DataLoader.from_db("test-id", use_cache=False)
-        mock_client.cell_measurement.detail.assert_not_called()
+        mock_client.cell_measurement.steps.assert_not_called()
+        mock_client.cell_measurement.time_series.assert_not_called()
 
 
 def test_dataloader_from_db_lazy_to_config_no_fetch():
@@ -1118,13 +1224,14 @@ def test_dataloader_from_db_lazy_to_config_no_fetch():
     with patch("ionworks.Ionworks", return_value=mock_client):
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         config = dl.to_config()
-        mock_client.cell_measurement.detail.assert_not_called()
+        mock_client.cell_measurement.steps.assert_not_called()
+        mock_client.cell_measurement.time_series.assert_not_called()
 
     assert config == {"data": "db:test-id"}
 
 
 def test_dataloader_from_db_lazy_fetches_on_data_access():
-    """Accessing .data triggers exactly one DB fetch."""
+    """Accessing .data loads steps then time_series (two API calls)."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1134,13 +1241,14 @@ def test_dataloader_from_db_lazy_fetches_on_data_access():
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         _ = dl.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
-    assert isinstance(dl.data, pd.DataFrame)
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-id")
+    assert isinstance(dl.data, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
 def test_dataloader_from_db_lazy_fetches_on_steps_access():
-    """Accessing .steps before .data still loads everything in one fetch."""
+    """Accessing .steps loads only steps (no time_series fetch)."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1150,14 +1258,14 @@ def test_dataloader_from_db_lazy_fetches_on_steps_access():
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         _ = dl.steps
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
-    assert isinstance(dl.steps, pd.DataFrame)
-    assert isinstance(dl.data, pd.DataFrame)
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_not_called()
+    assert isinstance(dl.steps, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
-def test_dataloader_from_db_lazy_single_fetch():
-    """Accessing both .data and .steps issues only one DB request."""
+def test_dataloader_from_db_lazy_steps_then_data():
+    """Accessing .data then .steps: steps and time_series each fetched once; .steps uses cache."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1168,7 +1276,205 @@ def test_dataloader_from_db_lazy_single_fetch():
         _ = dl.data
         _ = dl.steps
 
-    mock_client.cell_measurement.detail.assert_called_once()
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-id")
+    assert isinstance(dl.data, pl.DataFrame)
+    assert isinstance(dl.steps, pl.DataFrame)
+
+
+def test_dataloader_from_db_initial_voltage_triggers_steps_only():
+    """Accessing .initial_voltage after from_db loads only steps (no time_series)."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db(
+            "test-id", options={"first_step": 0, "last_step": 0}, use_cache=False
+        )
+        v_init = dl.initial_voltage
+
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_not_called()
+    assert v_init == 3.8
+
+
+def test_from_db_interpolate_transform_applied():
+    """from_db with options.transforms.interpolate resamples .data to regular interval."""
+    from unittest.mock import patch
+
+    # Dense irregular time series so interpolate=1.0 downsamples
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 0.2, 0.5, 1.0, 1.3, 2.0, 2.1, 3.0],
+            "Voltage [V]": [3.8, 3.78, 3.75, 3.7, 3.68, 3.6, 3.58, 3.5],
+            "Current [A]": [1.0] * 8,
+        }
+    )
+    steps = pd.DataFrame(
+        {"Start index": [0], "End index": [7], "Start voltage [V]": [3.8]}
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"transforms": {"interpolate": 1.0}},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    dt = np.diff(loader.data["Time [s]"].to_numpy())
+    assert len(dt) > 0
+    np.testing.assert_allclose(dt, 1.0, atol=1e-10)
+    assert len(loader.data) <= len(time_series)
+
+
+def test_from_db_top_level_gitt_to_ocp_applied():
+    """from_db with top-level gitt_to_ocp (no 'transforms' nesting) applies transform and yields Capacity [A.h]."""
+    from unittest.mock import patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.01,
+                0.02,
+                0.03,
+                0.03,
+                0.03,
+                0.03,
+                0.04,
+                0.05,
+                0.06,
+                0.06,
+                0.06,
+                0.06,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+        }
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"gitt_to_ocp": True},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    assert "Capacity [A.h]" in loader.data.columns
+    assert "Voltage [V]" in loader.data.columns
+    assert len(loader.data) == 2
+    assert loader.data["Capacity [A.h]"][0] == 0.0
+    np.testing.assert_array_almost_equal(
+        loader.data["Voltage [V]"].to_numpy(), [3.62, 3.32]
+    )
+
+
+def test_from_db_top_level_sort_and_gitt_to_ocp():
+    """from_db with top-level sort and gitt_to_ocp applies both transforms."""
+    from unittest.mock import patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.01,
+                0.02,
+                0.03,
+                0.03,
+                0.03,
+                0.03,
+                0.04,
+                0.05,
+                0.06,
+                0.06,
+                0.06,
+                0.06,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+        }
+    )
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        loader = iwdata.DataLoader.from_db(
+            "test-id",
+            options={"gitt_to_ocp": True, "sort": True},
+            use_cache=False,
+        )
+        _ = loader.data
+
+    assert "Capacity [A.h]" in loader.data.columns
+    assert len(loader.data) == 2
+    assert loader.data["Capacity [A.h]"][0] == 0.0
 
 
 def test_data_loader_to_config_with_db():
@@ -1340,7 +1646,7 @@ def test_ocp_data_loader_capacity_column_explicit():
     )
     assert "Capacity [A.h]" in loader.data.columns
     np.testing.assert_array_almost_equal(
-        loader.data["Capacity [A.h]"].values, [0.0, 0.1, 0.2, 0.3]
+        loader.data["Capacity [A.h]"].to_numpy(), [0.0, 0.1, 0.2, 0.3]
     )
 
 
@@ -1355,11 +1661,9 @@ def test_ocp_data_loader_sort_option():
     )
     loader = iwdata.OCPDataLoader(data, options={"sort": True})
     # After sorting, voltage should decrease
-    assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
+    assert loader.data["Voltage [V]"][0] > loader.data["Voltage [V]"][-1]
     # Capacity should increase
-    assert (
-        loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
-    )
+    assert loader.data["Capacity [A.h]"][0] < loader.data["Capacity [A.h]"][-1]
 
 
 def test_ocp_data_loader_remove_duplicates_option():
@@ -1700,15 +2004,13 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-cache-dataloader"
 
@@ -1716,7 +2018,8 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
         # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.DataLoader.from_db(measurement_id)
         _ = loader1.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Data should now be cached
     cached = _load_from_cache(measurement_id)
@@ -1724,14 +2027,17 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         # Second call should use cache (API not called again)
-        mock_client.cell_measurement.detail.reset_mock()
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
         loader2 = iwdata.DataLoader.from_db(measurement_id)
-        assert mock_client.cell_measurement.detail.call_count == 0
+        _ = loader2.data
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 0
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
-        loader1.data.reset_index(drop=True),
-        loader2.data.reset_index(drop=True),
+        loader1.data.to_pandas().reset_index(drop=True),
+        loader2.data.to_pandas().reset_index(drop=True),
     )
 
 
@@ -1753,15 +2059,13 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-bypass-cache"
 
@@ -1777,10 +2081,11 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
         # (lazy: fetch triggered by .data access)
         loader = iwdata.DataLoader.from_db(measurement_id, use_cache=False)
         _ = loader.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Should have fresh data, not cached data
-    assert loader.data["Time [s]"].iloc[0] == 0  # Not 99
+    assert loader.data["Time [s]"][0] == 0  # Not 99
 
 
 def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
@@ -1796,12 +2101,9 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = None
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = None
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-cache-ocp-dataloader"
 
@@ -1809,7 +2111,8 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
         # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.OCPDataLoader.from_db(measurement_id)
         _ = loader1.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Data should now be cached
     cached = _load_from_cache(measurement_id)
@@ -1817,14 +2120,69 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         # Second call should use cache (API not called again)
-        mock_client.cell_measurement.detail.reset_mock()
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
         loader2 = iwdata.OCPDataLoader.from_db(measurement_id)
-        assert mock_client.cell_measurement.detail.call_count == 0
+        _ = loader2.data
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 0
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
-        loader1.data.reset_index(drop=True),
-        loader2.data.reset_index(drop=True),
+        loader1.data.to_pandas().reset_index(drop=True),
+        loader2.data.to_pandas().reset_index(drop=True),
+    )
+
+
+def test_dataloader_from_db_cache_merge_steps_then_time_series(isolated_cache):
+    """Two-phase cache: .steps saves steps, then a new loader's .data merges time_series."""
+    from unittest.mock import MagicMock, patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2, 3],
+            "Voltage [V]": [3.8, 3.7, 3.6, 3.5],
+            "Current [A]": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Start index": [0],
+            "End index": [3],
+            "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
+        }
+    )
+
+    mock_client = MagicMock()
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
+
+    measurement_id = "test-cache-merge"
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        # Phase 1: access .steps only — should save steps to cache
+        loader1 = iwdata.DataLoader.from_db(measurement_id)
+        _ = loader1.steps
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 0
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        # Phase 2: new loader accesses .data — should find cached steps,
+        # fetch only time_series from API
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
+        loader2 = iwdata.DataLoader.from_db(measurement_id)
+        _ = loader2.data
+
+        # steps came from cache, time_series fetched from API
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 1
+
+    # Both loaders should have consistent step data
+    pd.testing.assert_frame_equal(
+        loader1.steps.to_pandas().reset_index(drop=True),
+        loader2.steps.to_pandas().reset_index(drop=True),
     )
 
 
@@ -1885,10 +2243,8 @@ def test_data_loader_without_steps_transforms():
         steps=None,
         options={"transforms": {"sort": True}},
     )
-    assert loader.data["Voltage [V]"].iloc[0] > loader.data["Voltage [V]"].iloc[-1]
-    assert (
-        loader.data["Capacity [A.h]"].iloc[0] < loader.data["Capacity [A.h]"].iloc[-1]
-    )
+    assert loader.data["Voltage [V]"][0] > loader.data["Voltage [V]"][-1]
+    assert loader.data["Capacity [A.h]"][0] < loader.data["Capacity [A.h]"][-1]
 
 
 def test_data_loader_without_steps_to_config():
@@ -1918,7 +2274,7 @@ def test_data_loader_without_steps_copy():
     copy = original.copy()
     assert copy is not original
     assert copy.steps is None
-    pd.testing.assert_frame_equal(original.data, copy.data)
+    pd.testing.assert_frame_equal(original.data.to_pandas(), copy.data.to_pandas())
 
 
 def test_data_loader_from_local_without_steps(tmp_path):
@@ -1974,18 +2330,18 @@ def test_gitt_to_ocp_transform():
                 0,
             ],
             "Discharge capacity [A.h]": [
+                0.00,
                 0.01,
                 0.02,
-                0.03,
-                0.03,
-                0.03,
-                0.03,
-                0.04,
-                0.05,
-                0.06,
-                0.06,
-                0.06,
-                0.06,
+                0.00,
+                0.00,
+                0.00,
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
             ],
             "Charge capacity [A.h]": [0.0] * 12,
         }
@@ -2021,9 +2377,280 @@ def test_gitt_to_ocp_transform():
     assert "Voltage [V]" in loader.data.columns
     assert "Capacity [A.h]" in loader.data.columns
     np.testing.assert_array_almost_equal(
-        loader.data["Voltage [V]"].values, [3.62, 3.32]
+        loader.data["Voltage [V]"].to_numpy(), [3.62, 3.32]
     )
-    assert loader.data["Capacity [A.h]"].iloc[0] == 0.0
+    # Capacity resets per step; cumulative = sum of discharge at end of previous discharge steps -> 0.02, 0.04; normalized -> 0, 0.02
+    np.testing.assert_array_almost_equal(
+        loader.data["Capacity [A.h]"].to_numpy(), [0.0, 0.02]
+    )
+    assert loader.data["Capacity [A.h]"][0] == 0.0
+
+
+def test_gitt_to_ocp_keep_first_ocp_point():
+    """With keep_first_ocp_point=True, first OCP point is start of first GITT step."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+            "Duration [s]": [3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0],
+        }
+    )
+    loader = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True, "keep_first_ocp_point": True}},
+    )
+    assert len(loader.data) == 3  # 2 rest ends + 1 first point
+    assert loader.data["Capacity [A.h]"][0] == 0.0
+    np.testing.assert_almost_equal(
+        loader.data["Voltage [V]"][0], time_series["Voltage [V]"][0]
+    )
+
+
+def test_rest_to_ocp_keep_first_ocp_point():
+    """With keep_first_ocp_point=True, first OCP point is first row of time series."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+            "Duration [s]": [3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0],
+        }
+    )
+    loader_no_first = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"rest_to_ocp": True}},
+    )
+    loader_with_first = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"rest_to_ocp": True, "keep_first_ocp_point": True}},
+    )
+    assert len(loader_with_first.data) == len(loader_no_first.data) + 1
+    assert loader_with_first.data["Capacity [A.h]"][0] == 0.0
+    np.testing.assert_almost_equal(
+        loader_with_first.data["Voltage [V]"][0],
+        time_series["Voltage [V]"].iloc[0],
+    )
+
+
+def test_keep_first_ocp_point_default_false():
+    """Without keep_first_ocp_point (or False), OCP row count is unchanged."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+            "Duration [s]": [3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0],
+        }
+    )
+    loader = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True}},
+    )
+    assert len(loader.data) == 2
+    loader_explicit_false = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True, "keep_first_ocp_point": False}},
+    )
+    assert len(loader_explicit_false.data) == 2
+
+
+def test_gitt_to_ocp_capacity_cumulative():
+    """GITT-to-OCP capacity column is cumulative across rows (capacity resets per step)."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(18)),
+            "Voltage [V]": [3.8, 3.7, 3.65, 3.60, 3.61, 3.62]
+            + [3.5, 3.4, 3.35, 3.30, 3.31, 3.32]
+            + [3.2, 3.1, 3.05, 3.00, 3.01, 3.02],
+            "Current [A]": ([-1] * 3 + [0] * 3) * 3,
+            # Capacity resets to 0 per step
+            "Discharge capacity [A.h]": (
+                [0.0, 0.02, 0.04]  # step 0 (discharge): adds 0.04
+                + [0.0, 0.0, 0.0]  # step 1 (rest)
+                + [0.0, 0.03, 0.06]  # step 2 (discharge): adds 0.06
+                + [0.0, 0.0, 0.0]  # step 3 (rest)
+                + [0.0, 0.05, 0.10]  # step 4 (discharge): adds 0.10
+                + [0.0, 0.0, 0.0]  # step 5 (rest)
+            ),
+            "Charge capacity [A.h]": [0.0] * 18,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3, 4, 5],
+            "Start index": [0, 3, 6, 9, 12, 15],
+            "End index": [2, 5, 8, 11, 14, 17],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30, 3.2, 3.00],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32, 3.05, 3.02],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT"] * 6,
+            "Group number": [0, 0, 1, 1, 2, 2],
+        }
+    )
+
+    loader = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True}},
+    )
+
+    cap = loader.data["Capacity [A.h]"].to_numpy()
+    # Capacity is normalized to start at 0, then cumulative (non-decreasing)
+    assert cap[0] == 0.0
+    assert np.all(np.diff(cap) >= -1e-12)
+    # Step 0 adds 0.04, step 2 adds 0.06, step 4 adds 0.10 -> 0.04, 0.10, 0.20; normalize -> 0, 0.06, 0.16
+    np.testing.assert_allclose(cap, [0.0, 0.06, 0.16], atol=1e-9)
 
 
 def test_gitt_to_ocp_requires_steps():
@@ -2042,6 +2669,215 @@ def test_gitt_to_ocp_requires_steps():
         )
 
 
+def test_rest_to_ocp_matches_gitt_when_all_rests_gitt():
+    """rest_to_ocp and gitt_to_ocp yield same OCP when every rest is GITT-labeled."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(12)),
+            "Voltage [V]": [
+                3.8,
+                3.7,
+                3.65,
+                3.60,
+                3.61,
+                3.62,
+                3.5,
+                3.4,
+                3.35,
+                3.30,
+                3.31,
+                3.32,
+            ],
+            "Current [A]": [-1, -1, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0],
+            "Discharge capacity [A.h]": [
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+                0.00,
+                0.01,
+                0.02,
+                0.00,
+                0.00,
+                0.00,
+            ],
+            "Charge capacity [A.h]": [0.0] * 12,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3],
+            "Start index": [0, 3, 6, 9],
+            "End index": [2, 5, 8, 11],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "GITT", "GITT"],
+            "Group number": [0, 0, 1, 1],
+            "Duration [s]": [3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0],
+        }
+    )
+    loader_gitt = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"gitt_to_ocp": True}},
+    )
+    loader_rest = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"rest_to_ocp": True}},
+    )
+    np.testing.assert_array_almost_equal(
+        loader_gitt.data["Capacity [A.h]"].to_numpy(),
+        loader_rest.data["Capacity [A.h]"].to_numpy(),
+    )
+    np.testing.assert_array_almost_equal(
+        loader_gitt.data["Voltage [V]"].to_numpy(),
+        loader_rest.data["Voltage [V]"].to_numpy(),
+    )
+
+
+def test_rest_to_ocp_all_rests():
+    """rest_to_ocp extracts OCP from every rest step, not only GITT-labeled."""
+    # 5 steps: discharge, rest, discharge, rest, rest; only first rest labeled GITT
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": list(range(15)),
+            "Voltage [V]": (
+                [3.8, 3.7, 3.65, 3.60, 3.61, 3.62]
+                + [3.5, 3.4, 3.35, 3.30, 3.31, 3.32]
+                + [3.2, 3.1, 3.05]
+            ),
+            "Current [A]": ([-1] * 3 + [0] * 3 + [-1] * 3 + [0] * 3 + [0] * 3),
+            "Discharge capacity [A.h]": (
+                [0.0, 0.01, 0.02, 0.0, 0.0, 0.0]
+                + [0.0, 0.01, 0.02, 0.0, 0.0, 0.0]
+                + [0.0, 0.0, 0.0]
+            ),
+            "Charge capacity [A.h]": [0.0] * 15,
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0, 1, 2, 3, 4],
+            "Start index": [0, 3, 6, 9, 12],
+            "End index": [2, 5, 8, 11, 14],
+            "Start voltage [V]": [3.8, 3.60, 3.5, 3.30, 3.2],
+            "End voltage [V]": [3.65, 3.62, 3.35, 3.32, 3.05],
+            "Step type": [
+                "Constant current discharge",
+                "Rest",
+                "Constant current discharge",
+                "Rest",
+                "Rest",
+            ],
+            "Label": ["GITT", "GITT", "Other", "Other", "Other"],
+            "Group number": [0, 0, 1, 1, 1],
+            "Duration [s]": [3, 3, 3, 3, 3],
+            "Mean current [A]": [-1, 0, -1, 0, 0],
+        }
+    )
+    loader_rest = iwdata.DataLoader(
+        time_series,
+        steps,
+        options={"transforms": {"rest_to_ocp": True}},
+    )
+    # All 3 rest steps (indices 1, 3, 4) -> 3 OCP points
+    assert len(loader_rest.data) == 3
+    assert "Voltage [V]" in loader_rest.data.columns
+    assert "Capacity [A.h]" in loader_rest.data.columns
+    np.testing.assert_array_almost_equal(
+        loader_rest.data["Voltage [V]"].to_numpy(), [3.62, 3.32, 3.05]
+    )
+    # Cumulative at rest 1=0.02, rest 3=0.04, rest 4=0.04; normalized -> 0, 0.02, 0.02
+    np.testing.assert_array_almost_equal(
+        loader_rest.data["Capacity [A.h]"].to_numpy(), [0.0, 0.02, 0.02]
+    )
+
+
+def test_rest_to_ocp_requires_steps():
+    """rest_to_ocp raises when steps are not provided."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    with pytest.raises(ValueError, match="rest_to_ocp requires steps"):
+        iwdata.DataLoader(
+            data,
+            steps=None,
+            options={"transforms": {"rest_to_ocp": True}},
+        )
+
+
+def test_rest_to_ocp_no_rest_steps():
+    """rest_to_ocp raises when no step has Step type == Rest."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2],
+            "Voltage [V]": [3.8, 3.7, 3.6],
+            "Current [A]": [-1, -1, -1],
+            "Discharge capacity [A.h]": [0.0, 0.01, 0.02],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0],
+            "Start index": [0],
+            "End index": [2],
+            "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.6],
+            "Step type": ["Constant current discharge"],
+            "Label": ["Discharge"],
+        }
+    )
+    with pytest.raises(ValueError, match="No rest steps found"):
+        iwdata.DataLoader(
+            time_series,
+            steps,
+            options={"transforms": {"rest_to_ocp": True}},
+        )
+
+
+def test_rest_to_ocp_requires_step_type_column():
+    """rest_to_ocp raises when steps have no 'Step type' column."""
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2],
+            "Voltage [V]": [3.8, 3.7, 3.6],
+            "Current [A]": [-1, -1, -1],
+            "Discharge capacity [A.h]": [0.0, 0.01, 0.02],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Step count": [0],
+            "Start index": [0],
+            "End index": [2],
+            "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.6],
+            "Label": ["Rest"],
+        }
+    )
+    with pytest.raises(ValueError, match="rest_to_ocp requires a 'Step type' column"):
+        iwdata.DataLoader(
+            time_series,
+            steps,
+            options={"transforms": {"rest_to_ocp": True}},
+        )
+
+
 def test_ocpdataloader_deprecation_warning():
     """Test that OCPDataLoader emits a deprecation warning."""
     data = pd.DataFrame(
@@ -2052,3 +2888,65 @@ def test_ocpdataloader_deprecation_warning():
     )
     with pytest.warns(DeprecationWarning, match="OCPDataLoader is deprecated"):
         iwdata.OCPDataLoader(data)
+
+
+# =============================================================================
+# Polars-internal storage tests
+# =============================================================================
+
+
+def test_no_pandas_conversion_during_init():
+    """Test that no eager pandas conversion happens; .data returns Polars."""
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+
+    # Accessing .data returns polars
+    assert isinstance(loader.data, pl.DataFrame)
+
+
+def test_data_set_updates_internal_polars():
+    """Test that setting .data updates internal polars and .data returns new frame."""
+    loader = iwdata.DataLoader.from_local(
+        Path("tests/test_data/cccv-synthetic-with-steps"),
+        {"first_step": 0, "last_step": 9},
+    )
+    _ = loader.data
+
+    # Set new data (polars)
+    new_data = pl.DataFrame({"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]})
+    loader.data = new_data
+
+    # .data returns the new polars frame
+    result = loader.data
+    assert len(result) == 2
+    assert isinstance(result, pl.DataFrame)
+
+
+def test_polars_input_preserved_without_conversion():
+    """Test that polars input stays in polars internally."""
+    ts = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/time_series.csv")
+    steps = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/steps.csv")
+
+    loader = iwdata.DataLoader(ts, steps)
+
+    # Internal storage is polars
+    assert isinstance(loader._data_pl, pl.DataFrame)  # noqa: SLF001
+    assert isinstance(loader._steps_pl, pl.DataFrame)  # noqa: SLF001
+
+    # Public API returns Polars
+    assert isinstance(loader.data, pl.DataFrame)
+    assert isinstance(loader.steps, pl.DataFrame)
+
+
+def test_steps_none_without_steps():
+    """Test that steps is None when no steps are loaded."""
+    data = pd.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
+        }
+    )
+    loader = iwdata.DataLoader(data)
+    assert loader.steps is None

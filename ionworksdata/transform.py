@@ -148,7 +148,7 @@ def set_cumulative_step_number(data: pl.DataFrame, **kwargs) -> pl.DataFrame:
 
 def set_step_count(
     data: pl.DataFrame | pd.DataFrame, options: dict | None = None
-) -> pl.DataFrame | pd.DataFrame:
+) -> pl.DataFrame:
     """
     Assign a cumulative step number "Step count" to each row in the data by detecting
     changes in the "Step from cycler" column.
@@ -172,12 +172,10 @@ def set_step_count(
 
     Returns
     -------
-    pl.DataFrame | pd.DataFrame
-        The data with "Step count" column added. Returns the same type as input.
+    pl.DataFrame
+        The data with "Step count" column added.
     """
-    # Track input type for return
-    return_pandas = isinstance(data, pd.DataFrame)
-    if return_pandas:
+    if isinstance(data, pd.DataFrame):
         data = pl.from_pandas(data)
 
     default_options = {
@@ -187,20 +185,14 @@ def set_step_count(
     options = iwutil.check_and_combine_options(
         default_options, options, filter_unknown=True
     )
-    # Ensure options use the step column name string
     if options is None:
         options = {"method": "step column", "step column": "Step from cycler"}
     else:
-        # normalize possible list value
         col = options.get("step column", "Step from cycler")
         if isinstance(col, list):
             options["step column"] = col[0]
     step_series = get_cumulative_step_number(data, options)
-    result = data.with_columns(step_series.alias("Step count"))
-
-    if return_pandas:
-        return result.to_pandas()
-    return result
+    return data.with_columns(step_series.alias("Step count"))
 
 
 def get_cumulative_cycle_number(
@@ -719,6 +711,45 @@ def _calculate_net_capacity(
         discharge_cap, charge_cap = _calculate_capacity(data, options)
 
     return discharge_cap - charge_cap
+
+
+def get_cumulative_net_capacity(
+    data: pl.DataFrame,
+    options: dict | None = None,
+) -> np.ndarray:
+    """
+    Cumulative net capacity (no reset) at each row.
+
+    Discharge/charge capacity columns reset to 0 at each step boundary.
+    We recover true cumulative values by diffing each column, clipping
+    negative diffs (the resets) to zero, and cumsumming. The result is
+    cumulative discharge minus cumulative charge.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Data with discharge/charge capacity columns (or current for integration).
+    options : dict, optional
+        Passed to get_current_and_capacity_units / _calculate_capacity.
+
+    Returns
+    -------
+    np.ndarray
+        Cumulative net capacity at each row, same length as data.
+    """
+    _, capacity_units = iwdata.util.get_current_and_capacity_units(options)
+    discharge_cap_col = f"Discharge capacity [{capacity_units}]"
+    charge_cap_col = f"Charge capacity [{capacity_units}]"
+
+    if discharge_cap_col in data.columns and charge_cap_col in data.columns:
+        discharge_cap = data.get_column(discharge_cap_col).to_numpy()
+        charge_cap = data.get_column(charge_cap_col).to_numpy()
+    else:
+        discharge_cap, charge_cap = _calculate_capacity(data, options)
+
+    cumul_discharge = np.cumsum(np.maximum(np.diff(discharge_cap, prepend=0), 0))
+    cumul_charge = np.cumsum(np.maximum(np.diff(charge_cap, prepend=0), 0))
+    return cumul_discharge - cumul_charge
 
 
 def set_net_capacity(data: pl.DataFrame, options: dict | None = None) -> pl.DataFrame:

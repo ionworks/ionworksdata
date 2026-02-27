@@ -4,8 +4,6 @@ Core step analysis functions for battery cycling data.
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -180,12 +178,16 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
                 - pl.col("Discharge energy [W.h]").first()
             ).alias("Discharge energy [W.h]")
             if "Discharge energy [W.h]" in time_series_pl.columns
+            else pl.lit(None).cast(pl.Float64).alias("Discharge energy [W.h]")
+            if not has_capacity_cols
             else pl.lit(0.0).alias("Discharge energy [W.h]"),
             (
                 pl.col("Charge energy [W.h]").last()
                 - pl.col("Charge energy [W.h]").first()
             ).alias("Charge energy [W.h]")
             if "Charge energy [W.h]" in time_series_pl.columns
+            else pl.lit(None).cast(pl.Float64).alias("Charge energy [W.h]")
+            if not has_capacity_cols
             else pl.lit(0.0).alias("Charge energy [W.h]"),
             pl.col("Voltage [V]").min().alias("Min voltage [V]"),
             pl.col("Voltage [V]").max().alias("Max voltage [V]"),
@@ -454,208 +456,64 @@ def infer_type(
         return "Unknown step type"
 
 
-def _postprocess_step(
-    time_series: pd.DataFrame,
-    stop_index: int,
-    start_index: int,
-    current_step: int,
-    cycle_count: int | None,
-    cycle_column: str | None,
-) -> dict:
-    """
-    Process a single battery cycling step to extract and calculate relevant metrics.
-
-    This function takes a section of time series data identified as a single step and
-    calculates various statistical measures and properties for that step, including
-    voltage, current, power, duration, and step type.
-
-    Parameters
-    ----------
-    time_series : pd.DataFrame
-        The complete time series DataFrame containing battery cycling data.
-    stop_index : int
-        The ending index of the step in the time_series DataFrame.
-    start_index : int
-        The starting index of the step in the time_series DataFrame.
-    current_step : int
-        The step count identifier.
-    cycle_count : int | None
-        The cycle count (cumulative cycle number) this step belongs to, or None if
-        cycles aren't tracked.
-    cycle_column : str | None
-        The column name containing cycle numbers, or None if cycles aren't tracked.
-
-    Returns
-    -------
-    dict
-        Dictionary containing calculated metrics and properties for the step including:
-        - Start/end indices, times, voltages, and capacities
-        - Min/max/std/mean values for voltage, current, and power
-        - Duration
-        - Step number, count, and type
-        - If cycle_column is provided, the value of that column, plus the cycle count
-    """
-    step: dict[str, Any] = {}
-
-    # Extract the relevant portion of time series data for this step
-    step_details = time_series.iloc[start_index : stop_index + 1].copy()
-
-    # Calculate power from voltage and current
-    step_details["Power [W]"] = (
-        step_details["Voltage [V]"] * step_details["Current [A]"]
-    )
-
-    # Record start and end indices
-    step["Start index"] = start_index
-    step["End index"] = stop_index
-
-    # Extract start and end values for time and voltage
-    start_end_cols = [
-        "Time [s]",
-        "Voltage [V]",
-    ]
-    for k in start_end_cols:
-        lower_k = k[0].lower() + k[1:]
-        step["Start " + lower_k] = step_details[k].iloc[0]
-        step["End " + lower_k] = step_details[k].iloc[-1]
-
-    # Calculate total discharge and charge capacity for this step
-    step["Discharge capacity [A.h]"] = (
-        step_details["Discharge capacity [A.h]"].iloc[-1]
-        - step_details["Discharge capacity [A.h]"].iloc[0]
-    )
-    step["Charge capacity [A.h]"] = (
-        step_details["Charge capacity [A.h]"].iloc[-1]
-        - step_details["Charge capacity [A.h]"].iloc[0]
-    )
-
-    # Calculate total discharge and charge energy for this step
-    if "Discharge energy [W.h]" in step_details.columns:
-        step["Discharge energy [W.h]"] = (
-            step_details["Discharge energy [W.h]"].iloc[-1]
-            - step_details["Discharge energy [W.h]"].iloc[0]
-        )
-    else:
-        step["Discharge energy [W.h]"] = 0.0
-
-    if "Charge energy [W.h]" in step_details.columns:
-        step["Charge energy [W.h]"] = (
-            step_details["Charge energy [W.h]"].iloc[-1]
-            - step_details["Charge energy [W.h]"].iloc[0]
-        )
-    else:
-        step["Charge energy [W.h]"] = 0.0
-
-    # Calculate statistical metrics for voltage, current, power, and frequency
-    stat_columns = [
-        "Voltage [V]",
-        "Current [A]",
-        "Power [W]",
-        "Frequency [Hz]",
-    ]
-    min_vals = {
-        k: step_details[k].min() if k in step_details.columns else 0
-        for k in stat_columns
-    }
-    max_vals = {
-        k: step_details[k].max() if k in step_details.columns else 0
-        for k in stat_columns
-    }
-    std_vals = {
-        k: np.nan_to_num(step_details[k].std(), nan=0.0)
-        if k in step_details.columns
-        else 0.0
-        for k in stat_columns
-    }
-    mean_vals = {
-        k: step_details[k].mean() if k in step_details.columns else 0
-        for k in stat_columns
-    }
-    for k in stat_columns:
-        lower_k = k[0].lower() + k[1:]
-        # Frequency is not always present, so we set it to 0 if it's not present
-        if k == "Frequency [Hz]" and "Frequency [Hz]" not in step_details.columns:
-            step["Min " + lower_k] = 0
-            step["Max " + lower_k] = 0
-            step["Std " + lower_k] = 0
-            step["Mean " + lower_k] = 0
-        else:
-            step["Min " + lower_k] = min_vals[k]
-            step["Max " + lower_k] = max_vals[k]
-            step["Std " + lower_k] = std_vals[k]
-            step["Mean " + lower_k] = mean_vals[k]
-
-    # Calculate step duration
-    step["Duration [s]"] = step["End time [s]"] - step["Start time [s]"]
-
-    # Record step count
-    step["Step count"] = current_step
-
-    # Infer the type of step based on the calculated metrics
-    step["Step type"] = infer_type(step)
-
-    # Record cycle count if available
-    step["Cycle count"] = cycle_count
-    # Log the original cycle_column if available
-    if cycle_column is not None:
-        step[cycle_column] = step_details[cycle_column].iloc[0]
-
-    # Initialize label and group number (to be set by the labeler later)
-    step["Label"] = ""
-    step["Group number"] = np.nan
-
-    return step
-
-
 def annotate(
     time_series: pl.DataFrame | pd.DataFrame,
     steps: pl.DataFrame | pd.DataFrame,
     column_names: list[str],
-) -> pl.DataFrame | pd.DataFrame:
+) -> pl.DataFrame:
     """
-    Apply columns from the steps to the time series.
+    Apply columns from the steps table to the time series.
+
+    Each time-series row is assigned the step's value for each requested column,
+    based on step "Start index" and "End index" (inclusive). Use this to attach
+    step-level info (e.g. "Step count", "Label", "Step type") to every row for
+    downstream transforms or filtering.
 
     Parameters
     ----------
     time_series : pl.DataFrame | pd.DataFrame
-        The time series to apply the columns to.
+        The time series to annotate. Row indices are 0 to n-1; steps must use
+        the same index space (e.g. slice coordinates).
     steps : pl.DataFrame | pd.DataFrame
-        The steps to apply the columns from.
+        Steps with "Start index" and "End index" and the columns in column_names.
     column_names : list[str]
-        The columns to apply from the steps to the time series.
+        Columns to copy from steps onto the time series.
 
     Returns
     -------
-    pl.DataFrame | pd.DataFrame
-        The time series with the columns applied. Returns the same type as the input
-        time_series.
+    pl.DataFrame
+        The time series with the requested step columns added.
     """
-    # Remember the input type
-    return_polars = isinstance(time_series, pl.DataFrame)
-
-    # Convert to pandas for row-wise slice assignment via .loc[start:end, col] = value
-    # Polars doesn't support efficient in-place row slice assignment by index ranges.
-    # This operation requires iterating over step ranges and updating corresponding
-    # time series rows, which is a pandas strength.
-    if isinstance(steps, pl.DataFrame):
-        steps_pd = steps.to_pandas()
+    if isinstance(time_series, pd.DataFrame):
+        time_series_pl = pl.from_pandas(time_series)
     else:
-        steps_pd = steps
-
-    if isinstance(time_series, pl.DataFrame):
-        time_series_pd = time_series.to_pandas()
+        time_series_pl = time_series
+    if isinstance(steps, pd.DataFrame):
+        steps_pl = pl.from_pandas(steps)
     else:
-        time_series_pd = time_series
+        steps_pl = steps
 
-    time_series_pd = time_series_pd.copy()
+    time_series_pl = time_series_pl.with_row_index("__row_id")
 
-    for _, row in steps_pd.iterrows():
-        for column_name in column_names:
-            time_series_pd.loc[row["Start index"] : row["End index"], column_name] = (
-                row[column_name]
-            )
+    # Build a long-format frame: __row_id and one column per column_name
+    # Each step contributes rows from Start index to End index (inclusive) with
+    # the step's values for column_names.
+    parts: list[pl.DataFrame] = []
+    for row in steps_pl.iter_rows(named=True):
+        start = int(row["Start index"])
+        end = int(row["End index"])
+        row_ids = pl.Series("__row_id", range(start, end + 1))
+        cols = [row_ids]
+        for col_name in column_names:
+            val = row[col_name]
+            cols.append(pl.Series(col_name, [val] * (end - start + 1)))
+        parts.append(pl.DataFrame(cols))
+    if not parts:
+        for col_name in column_names:
+            time_series_pl = time_series_pl.with_columns(pl.lit(None).alias(col_name))
+        return time_series_pl.drop("__row_id")
 
-    # Convert back to Polars if input was Polars
-    if return_polars:
-        return pl.from_pandas(time_series_pd)
-    return time_series_pd
+    steps_by_row = pl.concat(parts)
+
+    time_series_pl = time_series_pl.join(steps_by_row, on="__row_id", how="left")
+    return time_series_pl.drop("__row_id")

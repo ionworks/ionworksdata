@@ -13,7 +13,7 @@ Full API and usage details are in the [Ionworks Data Processing documentation](h
 - **`read`** — Read raw data from files: `time_series`, `time_series_and_steps`, `measurement_details`; readers include `biologic`, `biologic_mpt`, `maccor`, `neware`, `novonix`, `repower`, `csv`, and others (reader is auto-detected when not specified).
 - **`transform`** — Transform time series into Ionworks-compatible form (step count, cycle count, capacity, energy, etc.).
 - **`steps`** — Summarize time series into step-level data and label steps (cycling, pulse, EIS) for processing or visualization.
-- **`load`** — Load processed data for use in other Ionworks software (`DataLoader`, `OCPDataLoader`).
+- **`load`** — Load processed data for use in other Ionworks software (`DataLoader`, `OCPDataLoader`). `DataLoader.data` and `.steps` return Polars DataFrames; use `.data.to_pandas()` or `.steps.to_pandas()` for pandas. When loading from the database with `DataLoader.from_db(...)`, data is loaded on demand: `.initial_voltage` and `.steps` load only the steps table; `.data` also loads the time series.
 
 ## Installation
 

@@ -15,7 +15,7 @@ from ionworksdata.logger import logger
 def label_cycling(
     steps: pd.DataFrame | pl.DataFrame,
     options: dict | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Label the "cycling" portion of the test.
 
@@ -41,18 +41,14 @@ def label_cycling(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         The steps dataframe with the cycling steps labeled.
     """
-    # Convert to pandas for this function's logic which relies on:
-    # - .loc indexing with boolean masks and step count slices
-    # - .values attribute for numpy broadcasting operations
-    # - pd.concat for combining Series with sort_values() and unique()
-    if isinstance(steps, pl.DataFrame):
-        steps = steps.to_pandas()
-    steps = steps.copy()
+    if isinstance(steps, pd.DataFrame):
+        steps_pl = pl.from_pandas(steps)
+    else:
+        steps_pl = steps.clone()
 
-    # Set default options
     default_options = {
         "cell_metadata": "[required]",
         "constant current threshold": 1 / 2,
@@ -66,91 +62,90 @@ def label_cycling(
         raise ValueError("cell_metadata is required")
     Q = cell_metadata["Nominal cell capacity [A.h]"]
 
-    # Require capacity columns with no nulls; otherwise do not apply labels
-    if (
-        "Discharge capacity [A.h]" not in steps.columns
-        or "Charge capacity [A.h]" not in steps.columns
-    ):
-        logger.warning(
-            "Cycling labeling requires 'Discharge capacity [A.h]' and 'Charge capacity [A.h]'; "
-            "skipping labels."
-        )
-        return steps
-    if (
-        steps["Discharge capacity [A.h]"].isna().any()
-        or steps["Charge capacity [A.h]"].isna().any()
-    ):
-        logger.warning("Cycling labeling requires non-null capacity; skipping labels.")
-        return steps
+    # Check for necessary columns and non-null values
+    required_cols = ["Discharge capacity [A.h]", "Charge capacity [A.h]"]
+    for col in required_cols:
+        if col not in steps_pl.columns:
+            logger.warning(
+                "Cycling labeling requires 'Discharge capacity [A.h]' and 'Charge capacity [A.h]'; "
+                "skipping labels."
+            )
+            return steps_pl
+        if steps_pl[col].is_null().any():
+            logger.warning(
+                "Cycling labeling requires non-null capacity; skipping labels."
+            )
+            return steps_pl
 
-    # Filter by total capacity (sum of discharge and charge for each step)
-    discharge_cap = steps["Discharge capacity [A.h]"].abs()
-    charge_cap = steps["Charge capacity [A.h]"].abs()
-    dQ = abs(discharge_cap - charge_cap)
-    capacity_filter = dQ > Q * options_validated["constant current threshold"]
-    constant_current_steps = steps[capacity_filter]
+    # Always use polars DataFrame for cycling detection
+    discharge_cap = steps_pl["Discharge capacity [A.h]"].abs()
+    charge_cap = steps_pl["Charge capacity [A.h]"].abs()
+    dQ = (discharge_cap - charge_cap).abs()
+    threshold = Q * options_validated["constant current threshold"]
+    constant_current_steps = steps_pl.filter(dQ > threshold)
 
-    if len(constant_current_steps) == 0:
+    if constant_current_steps.height == 0:
         logger.warning(
             "Insufficient constant current steps found in the data, "
             "unable to add labels."
         )
-        return steps
+        return steps_pl
 
     cc_step_counts = constant_current_steps["Step count"]
-    cc_discharge_step_counts = constant_current_steps[
-        constant_current_steps["Step type"] == "Constant current discharge"
-    ]["Step count"]
-    cc_charge_step_counts = constant_current_steps[
-        constant_current_steps["Step type"] == "Constant current charge"
-    ]["Step count"]
+    cc_discharge = constant_current_steps.filter(
+        pl.col("Step type") == "Constant current discharge"
+    )["Step count"]
+    cc_charge = constant_current_steps.filter(
+        pl.col("Step type") == "Constant current charge"
+    )["Step count"]
 
-    # Get constant voltage steps
-    cv_step_counts = steps[
-        steps["Step type"].isin(
+    cv_steps = steps_pl.filter(
+        pl.col("Step type").is_in(
             ["Constant voltage discharge", "Constant voltage charge"]
         )
-    ]["Step count"]
-    # Only keep CV steps that are +/- 1 step away from CC steps
-    cv_mask = (abs(cv_step_counts.values[:, None] - cc_step_counts.values) == 1).any(
-        axis=1
     )
-    cv_step_counts = cv_step_counts[cv_mask]
+    cv_step_counts = cv_steps["Step count"]
+    cc_arr = cc_step_counts.to_numpy()
+    cv_arr = cv_step_counts.to_numpy()
+    cv_mask = (np.abs(cv_arr[:, None] - cc_arr) == 1).any(axis=1)
+    cv_step_counts = pl.Series(cv_step_counts.name, cv_arr[cv_mask])
 
-    # Get rest steps
-    rest_step_counts = steps[steps["Step type"] == "Rest"]["Step count"]
-
-    # Only keep rest steps that are +/- 1 step away from CC or CV steps
-    rest_mask = (
-        abs(rest_step_counts.values[:, None] - cc_step_counts.values) == 1
-    ).any(axis=1) | (
-        abs(rest_step_counts.values[:, None] - cv_step_counts.values) == 1
+    rest_steps = steps_pl.filter(pl.col("Step type") == "Rest")
+    rest_step_counts = rest_steps["Step count"]
+    rest_arr = rest_step_counts.to_numpy()
+    rest_mask = (np.abs(rest_arr[:, None] - cc_arr) == 1).any(axis=1) | (
+        np.abs(rest_arr[:, None] - cv_step_counts.to_numpy()) == 1
     ).any(axis=1)
-    rest_step_counts = rest_step_counts[rest_mask]
+    rest_step_counts = pl.Series(rest_step_counts.name, rest_arr[rest_mask])
 
-    # Combine all step numbers, sort them, and get unique values
     step_counts = (
-        pd.concat([cc_step_counts, cv_step_counts, rest_step_counts])
-        .sort_values()
-        .unique()
+        pl.concat([cc_step_counts, cv_step_counts, rest_step_counts]).unique().sort()
+    )
+    step_counts_arr = step_counts.to_numpy()
+
+    step_counts_list = step_counts.to_list()
+    steps_pl = steps_pl.with_columns(
+        pl.when(pl.col("Step count").is_in(step_counts_list))
+        .then(pl.lit("Cycling"))
+        .otherwise(pl.col("Label"))
+        .alias("Label")
     )
 
-    # Label as cycling steps
-    steps.loc[step_counts, "Label"] = "Cycling"
-
-    # Add a group number to each cycling step, which increments each time we see a
-    # constant current (dis)charge step and resets when steps are not contiguous
-    group_nums = np.zeros(len(step_counts))
-    for i, step in enumerate(step_counts):
-        # Reset group number if steps are not contiguous
-        if i > 0 and step != step_counts[i - 1] + 1:
+    group_nums = np.zeros(len(step_counts_arr), dtype=np.int64)
+    cc_discharge_set = set(cc_discharge.to_list())
+    cc_charge_set = set(cc_charge.to_list())
+    for i, step in enumerate(step_counts_arr):
+        if i > 0 and step != step_counts_arr[i - 1] + 1:
             group_nums[i:] = 0
-        # Increment group number on (dis)charge steps, except first step after reset
-        if (
-            step in cc_discharge_step_counts.values
-            or step in cc_charge_step_counts.values
-        ) and (i > 0 and step == step_counts[i - 1] + 1):
+        if (step in cc_discharge_set or step in cc_charge_set) and (
+            i > 0 and step == step_counts_arr[i - 1] + 1
+        ):
             group_nums[i:] += 1
-    steps.loc[step_counts, "Group number"] = group_nums.astype(np.int64)
 
-    return steps
+    step_to_group = dict(zip(step_counts_arr.tolist(), group_nums.tolist()))
+    group_series = pl.Series(
+        "Group number",
+        [step_to_group.get(s, None) for s in steps_pl["Step count"].to_list()],
+    )
+    steps_pl = steps_pl.with_columns(group_series)
+    return steps_pl
