@@ -1098,7 +1098,7 @@ def test_dataloader_polars_with_sql_query():
 
 
 def test_dataloader_from_db():
-    """Test DataLoader.from_db loads data from ionworks-api."""
+    """Test DataLoader.from_db loads data from ionworks-api (steps + time_series)."""
     from unittest.mock import MagicMock, patch
 
     time_series = pd.DataFrame(
@@ -1113,15 +1113,13 @@ def test_dataloader_from_db():
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         data_loader = iwdata.DataLoader.from_db(
@@ -1130,7 +1128,10 @@ def test_dataloader_from_db():
         # Trigger lazy load by accessing data.
         _ = data_loader.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with(
+    mock_client.cell_measurement.steps.assert_called_once_with(
+        "test-measurement-id-123"
+    )
+    mock_client.cell_measurement.time_series.assert_called_once_with(
         "test-measurement-id-123"
     )
     assert isinstance(data_loader, iwdata.DataLoader)
@@ -1138,7 +1139,7 @@ def test_dataloader_from_db():
 
 
 def test_ocp_dataloader_from_db():
-    """Test OCPDataLoader.from_db loads data from ionworks-api."""
+    """Test OCPDataLoader.from_db loads data from ionworks-api (no steps)."""
     from unittest.mock import MagicMock, patch
 
     time_series = pd.DataFrame(
@@ -1148,25 +1149,26 @@ def test_ocp_dataloader_from_db():
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = None
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = None
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         data_loader = iwdata.OCPDataLoader.from_db("test-ocp-id-456", use_cache=False)
         # Trigger lazy load by accessing data.
         _ = data_loader.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-ocp-id-456")
+    mock_client.cell_measurement.steps.assert_called_once_with("test-ocp-id-456")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-ocp-id-456")
     assert isinstance(data_loader, iwdata.DataLoader)
     assert data_loader._measurement_id == "test-ocp-id-456"  # noqa: SLF001
 
 
 def _make_mock_client(time_series, steps):
-    """Helper to build a mock Ionworks client for from_db lazy-loading tests."""
+    """Helper to build a mock Ionworks client for from_db lazy-loading tests.
+
+    Configures both separate endpoints (steps, time_series) and legacy detail().
+    """
     from unittest.mock import MagicMock
 
     mock_measurement_detail = MagicMock()
@@ -1174,6 +1176,8 @@ def _make_mock_client(time_series, steps):
     mock_measurement_detail.steps = steps
     mock_client = MagicMock()
     mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
     return mock_client
 
 
@@ -1191,6 +1195,7 @@ def _make_test_data():
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
     return time_series, steps
@@ -1205,7 +1210,8 @@ def test_dataloader_from_db_lazy_no_fetch_on_creation():
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         iwdata.DataLoader.from_db("test-id", use_cache=False)
-        mock_client.cell_measurement.detail.assert_not_called()
+        mock_client.cell_measurement.steps.assert_not_called()
+        mock_client.cell_measurement.time_series.assert_not_called()
 
 
 def test_dataloader_from_db_lazy_to_config_no_fetch():
@@ -1218,13 +1224,14 @@ def test_dataloader_from_db_lazy_to_config_no_fetch():
     with patch("ionworks.Ionworks", return_value=mock_client):
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         config = dl.to_config()
-        mock_client.cell_measurement.detail.assert_not_called()
+        mock_client.cell_measurement.steps.assert_not_called()
+        mock_client.cell_measurement.time_series.assert_not_called()
 
     assert config == {"data": "db:test-id"}
 
 
 def test_dataloader_from_db_lazy_fetches_on_data_access():
-    """Accessing .data triggers exactly one DB fetch."""
+    """Accessing .data loads steps then time_series (two API calls)."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1234,13 +1241,14 @@ def test_dataloader_from_db_lazy_fetches_on_data_access():
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         _ = dl.data
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-id")
     assert isinstance(dl.data, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
 def test_dataloader_from_db_lazy_fetches_on_steps_access():
-    """Accessing .steps before .data still loads everything in one fetch."""
+    """Accessing .steps loads only steps (no time_series fetch)."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1250,14 +1258,14 @@ def test_dataloader_from_db_lazy_fetches_on_steps_access():
         dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
         _ = dl.steps
 
-    mock_client.cell_measurement.detail.assert_called_once_with("test-id")
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_not_called()
     assert isinstance(dl.steps, pl.DataFrame)
-    assert isinstance(dl.data, pl.DataFrame)
     assert dl._measurement_id == "test-id"  # noqa: SLF001
 
 
-def test_dataloader_from_db_lazy_single_fetch():
-    """Accessing both .data and .steps issues only one DB request."""
+def test_dataloader_from_db_lazy_steps_then_data():
+    """Accessing .data then .steps: steps and time_series each fetched once; .steps uses cache."""
     from unittest.mock import patch
 
     time_series, steps = _make_test_data()
@@ -1268,7 +1276,28 @@ def test_dataloader_from_db_lazy_single_fetch():
         _ = dl.data
         _ = dl.steps
 
-    mock_client.cell_measurement.detail.assert_called_once()
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_called_once_with("test-id")
+    assert isinstance(dl.data, pl.DataFrame)
+    assert isinstance(dl.steps, pl.DataFrame)
+
+
+def test_dataloader_from_db_initial_voltage_triggers_steps_only():
+    """Accessing .initial_voltage after from_db loads only steps (no time_series)."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db(
+            "test-id", options={"first_step": 0, "last_step": 0}, use_cache=False
+        )
+        v_init = dl.initial_voltage
+
+    mock_client.cell_measurement.steps.assert_called_once_with("test-id")
+    mock_client.cell_measurement.time_series.assert_not_called()
+    assert v_init == 3.8
 
 
 def test_from_db_interpolate_transform_applied():
@@ -1975,15 +2004,13 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-cache-dataloader"
 
@@ -1991,7 +2018,8 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
         # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.DataLoader.from_db(measurement_id)
         _ = loader1.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Data should now be cached
     cached = _load_from_cache(measurement_id)
@@ -1999,9 +2027,12 @@ def test_dataloader_from_db_uses_cache(isolated_cache):
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         # Second call should use cache (API not called again)
-        mock_client.cell_measurement.detail.reset_mock()
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
         loader2 = iwdata.DataLoader.from_db(measurement_id)
-        assert mock_client.cell_measurement.detail.call_count == 0
+        _ = loader2.data
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 0
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
@@ -2028,15 +2059,13 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
             "Start index": [0],
             "End index": [3],
             "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = steps
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-bypass-cache"
 
@@ -2052,7 +2081,8 @@ def test_dataloader_from_db_use_cache_false(isolated_cache):
         # (lazy: fetch triggered by .data access)
         loader = iwdata.DataLoader.from_db(measurement_id, use_cache=False)
         _ = loader.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Should have fresh data, not cached data
     assert loader.data["Time [s]"][0] == 0  # Not 99
@@ -2071,12 +2101,9 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
         }
     )
 
-    mock_measurement_detail = MagicMock()
-    mock_measurement_detail.time_series = time_series
-    mock_measurement_detail.steps = None
-
     mock_client = MagicMock()
-    mock_client.cell_measurement.detail.return_value = mock_measurement_detail
+    mock_client.cell_measurement.steps.return_value = None
+    mock_client.cell_measurement.time_series.return_value = time_series
 
     measurement_id = "test-cache-ocp-dataloader"
 
@@ -2084,7 +2111,8 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
         # First call should hit the API (lazy: fetch triggered by .data access)
         loader1 = iwdata.OCPDataLoader.from_db(measurement_id)
         _ = loader1.data
-        assert mock_client.cell_measurement.detail.call_count == 1
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 1
 
     # Data should now be cached
     cached = _load_from_cache(measurement_id)
@@ -2092,14 +2120,69 @@ def test_ocp_dataloader_from_db_uses_cache(isolated_cache):
 
     with patch("ionworks.Ionworks", return_value=mock_client):
         # Second call should use cache (API not called again)
-        mock_client.cell_measurement.detail.reset_mock()
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
         loader2 = iwdata.OCPDataLoader.from_db(measurement_id)
-        assert mock_client.cell_measurement.detail.call_count == 0
+        _ = loader2.data
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 0
 
     # Both loaders should have same data
     pd.testing.assert_frame_equal(
         loader1.data.to_pandas().reset_index(drop=True),
         loader2.data.to_pandas().reset_index(drop=True),
+    )
+
+
+def test_dataloader_from_db_cache_merge_steps_then_time_series(isolated_cache):
+    """Two-phase cache: .steps saves steps, then a new loader's .data merges time_series."""
+    from unittest.mock import MagicMock, patch
+
+    time_series = pd.DataFrame(
+        {
+            "Time [s]": [0, 1, 2, 3],
+            "Voltage [V]": [3.8, 3.7, 3.6, 3.5],
+            "Current [A]": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    steps = pd.DataFrame(
+        {
+            "Start index": [0],
+            "End index": [3],
+            "Start voltage [V]": [3.8],
+            "End voltage [V]": [3.5],
+        }
+    )
+
+    mock_client = MagicMock()
+    mock_client.cell_measurement.steps.return_value = steps
+    mock_client.cell_measurement.time_series.return_value = time_series
+
+    measurement_id = "test-cache-merge"
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        # Phase 1: access .steps only — should save steps to cache
+        loader1 = iwdata.DataLoader.from_db(measurement_id)
+        _ = loader1.steps
+        assert mock_client.cell_measurement.steps.call_count == 1
+        assert mock_client.cell_measurement.time_series.call_count == 0
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        # Phase 2: new loader accesses .data — should find cached steps,
+        # fetch only time_series from API
+        mock_client.cell_measurement.steps.reset_mock()
+        mock_client.cell_measurement.time_series.reset_mock()
+        loader2 = iwdata.DataLoader.from_db(measurement_id)
+        _ = loader2.data
+
+        # steps came from cache, time_series fetched from API
+        assert mock_client.cell_measurement.steps.call_count == 0
+        assert mock_client.cell_measurement.time_series.call_count == 1
+
+    # Both loaders should have consistent step data
+    pd.testing.assert_frame_equal(
+        loader1.steps.to_pandas().reset_index(drop=True),
+        loader2.steps.to_pandas().reset_index(drop=True),
     )
 
 
