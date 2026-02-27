@@ -1407,7 +1407,6 @@ class DataLoader:
         instance._lazy_steps_pending = True  # noqa: SLF001
         instance._lazy_time_series_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
-        instance._lazy_options = options  # noqa: SLF001
         instance._lazy_timeout = timeout  # noqa: SLF001
 
         return instance
