@@ -236,9 +236,9 @@ class DataLoader:
                 - remove_extremes : bool
                     See :meth:`remove_ocp_extremes` for details.
                 - filters : dict
-                    See :meth:`filter_data_pl` for details.
+                    See :meth:`filter_data` for details.
                 - interpolate : float | np.ndarray
-                    See :meth:`interpolate_data_pl` for details.
+                    See :meth:`interpolate_data` for details.
                 - keep_first_ocp_point : bool
                     If True, prepend the first point (see :meth:`transform_gitt_to_ocp`
                     and :meth:`transform_rest_to_ocp`). Default False. Ignored if
@@ -263,14 +263,12 @@ class DataLoader:
     def data(self) -> pl.DataFrame:
         """Time-series data as a Polars DataFrame. Use .data.to_pandas() for pandas."""
         self._ensure_time_series_loaded()
-        if not getattr(self, "_data_steps_warned", False):
-            warnings.warn(
-                "DataLoader.data and .steps now return Polars DataFrames. "
-                "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
-                UserWarning,
-                stacklevel=2,
-            )
-            self._data_steps_warned = True  # noqa: SLF001
+        warnings.warn(
+            "DataLoader.data and .steps now return Polars DataFrames. "
+            "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
+            FutureWarning,
+            stacklevel=2,
+        )
         return self._data_pl
 
     @data.setter
@@ -281,18 +279,12 @@ class DataLoader:
             self._data_pl = pl.from_pandas(value)
         else:
             self._data_pl = pl.DataFrame(value)
-        self._data_pd_cache = None
-
-    @property
-    def data_pl(self) -> pl.DataFrame:
-        self._ensure_time_series_loaded()
-        return self._data_pl
 
     def __getitem__(self, key: str) -> pl.Series:
         return self.data[key]
 
     @staticmethod
-    def filter_data_pl(data: pl.DataFrame, filters: dict) -> pl.DataFrame:
+    def filter_data(data: pl.DataFrame, filters: dict) -> pl.DataFrame:
         """Filter a Polars DataFrame using the specified filter functions.
 
         Each key in ``filters`` is a column name; the value must include
@@ -316,7 +308,7 @@ class DataLoader:
         return data
 
     @staticmethod
-    def interpolate_data_pl(
+    def interpolate_data(
         data: pl.DataFrame,
         knots: float | np.ndarray,
         x_column: str = "Time [s]",
@@ -326,6 +318,9 @@ class DataLoader:
         If ``knots`` is a float, data is resampled at that regular interval along
         ``x_column``. If an array, interpolated at those knots. Used by the
         ``interpolate`` transform option.
+
+        Only numeric columns are interpolated. Non-numeric (e.g. Utf8/String)
+        columns are skipped and do not appear in the returned DataFrame.
         """
         if isinstance(knots, float):
             x_min = data[x_column].min()
@@ -333,112 +328,34 @@ class DataLoader:
             knots = np.arange(x_min, x_max, knots)
 
         x_values = data[x_column].to_numpy()
+        numeric_types = {
+            pl.Int8,
+            pl.Int16,
+            pl.Int32,
+            pl.Int64,
+            pl.UInt8,
+            pl.UInt16,
+            pl.UInt32,
+            pl.UInt64,
+            pl.Float32,
+            pl.Float64,
+            pl.Boolean,
+        }
         interpolated_data = {}
+        skipped = []
         for col_name in data.columns:
             if col_name == x_column:
+                continue
+            if data[col_name].dtype not in numeric_types:
+                skipped.append(col_name)
                 continue
             interpolated_data[col_name] = np.interp(
                 knots, x_values, data[col_name].to_numpy()
             )
-        interpolated_data[x_column] = knots
-        return pl.DataFrame(interpolated_data)
-
-    @staticmethod
-    def filter_data(data: pd.DataFrame, filters: dict) -> pd.DataFrame:
-        """
-        Process the data using a specified filter function.
-
-        Parameters
-        ----------
-        data : pd.DataFrame
-            The raw data to be filtered.
-        filters : dict
-            The filter function to use. Currently supported: "savgol"
-
-        Returns
-        -------
-        pd.DataFrame
-            The filtered data.
-
-        Raises
-        ------
-        ValueError
-            If an unknown filter function is specified.
-        """
-        filtered_data = data.copy()
-        for variable, kwargs in filters.items():
-            match kwargs["filter_type"]:
-                case "savgol":
-                    filtered_data[variable] = savgol_filter(
-                        data[variable], **kwargs["parameters"]
-                    )
-                case _:
-                    raise ValueError(
-                        f"Unknown filter function: {kwargs['filter_type']}"
-                    )
-        return filtered_data
-
-    @staticmethod
-    def interpolate_data(
-        data: pd.DataFrame | pl.DataFrame,
-        knots: float | np.ndarray,
-        x_column: str = "Time [s]",
-    ) -> pd.DataFrame:
-        """
-        Interpolate the data using np.interp
-
-        Parameters
-        ----------
-        knots : float | np.ndarray
-            The knots at which to interpolate the data. If a float is provided,
-            the data is interpolated at regular intervals of that size. If an
-            array is provided, the data is interpolated at the specified knots.
-
-        data : pd.DataFrame | pl.DataFrame
-            The data to interpolate. Must contain x_column.
-        x_column : str, optional
-            The column to use as the x-axis for interpolation. Defaults to "Time [s]".
-
-        Returns
-        -------
-        pd.DataFrame
-            The interpolated data. Only numeric columns (plus the x-axis column)
-            are included; object/string columns are omitted.
-
-        Notes
-        -----
-        Only numeric columns are interpolated. Non-numeric (e.g. object or
-        string) columns are skipped and do not appear in the returned DataFrame.
-        """
-        if isinstance(data, pl.DataFrame):
-            data_pl = data
-            data_pd = data.to_pandas()
-        else:
-            data_pl = pl.from_pandas(data)
-            data_pd = data
-        if isinstance(knots, float):
-            x_min = data_pl[x_column].min()
-            x_max = data_pl[x_column].max()
-            knots = np.arange(x_min, x_max, knots)
-
-        interpolated_data = {}
-        x_values = data_pd[x_column].values
-        numeric_cols = [
-            c
-            for c in data_pd.columns
-            if c != x_column and pd.api.types.is_numeric_dtype(data_pd[c])
-        ]
-        skipped = [
-            c for c in data_pd.columns if c != x_column and c not in numeric_cols
-        ]
         if skipped:
             logger.debug("interpolate_data: skipping non-numeric columns %s", skipped)
-        for variable in numeric_cols:
-            interpolated_data[variable] = np.interp(
-                knots, x_values, data_pd[variable].values
-            )
         interpolated_data[x_column] = knots
-        return pd.DataFrame(interpolated_data)
+        return pl.DataFrame(interpolated_data)
 
     @property
     def steps(self) -> pl.DataFrame | None:
@@ -446,14 +363,12 @@ class DataLoader:
         self._ensure_steps_loaded()
         if self._steps_pl is None:
             return None
-        if not getattr(self, "_data_steps_warned", False):
-            warnings.warn(
-                "DataLoader.data and .steps now return Polars DataFrames. "
-                "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
-                UserWarning,
-                stacklevel=2,
-            )
-            self._data_steps_warned = True  # noqa: SLF001
+        warnings.warn(
+            "DataLoader.data and .steps now return Polars DataFrames. "
+            "For pandas use: loader.data.to_pandas() or loader.steps.to_pandas().",
+            FutureWarning,
+            stacklevel=2,
+        )
         return self._steps_pl
 
     @steps.setter
@@ -466,12 +381,6 @@ class DataLoader:
             self._steps_pl = pl.from_pandas(value)
         else:
             self._steps_pl = pl.DataFrame(value)
-        self._steps_pd_cache = None
-
-    @property
-    def steps_pl(self) -> pl.DataFrame | None:
-        self._ensure_steps_loaded()
-        return self._steps_pl
 
     @property
     def initial_voltage(self):
@@ -523,7 +432,7 @@ class DataLoader:
             steps_pl, self._first_step, self._last_step
         )
         self._steps_pl = sliced_steps_pl
-        self._steps_pd_cache = None
+
         self._initial_voltage = initial_voltage
         self._start_idx = start_idx
         self._end_idx = end_idx
@@ -564,7 +473,7 @@ class DataLoader:
             data_pl = time_series_pl.slice(start_idx, end_idx - start_idx)
         data_pl = self._alias_columns(data_pl, capacity_column)
         self._data_pl = data_pl
-        self._data_pd_cache = None
+
         self._apply_transforms()
 
     # ------------------------------------------------------------------
@@ -664,15 +573,13 @@ class DataLoader:
         self._last_step = parsed["last_step"]
         capacity_column = parsed["capacity_column"]
         self._capacity_column = capacity_column
-        self._steps_pd_cache = None
-        self._data_steps_warned = False  # noqa: SLF001
         if steps is not None:
             data_pl = self._init_with_steps(time_series, steps)
         else:
             data_pl = self._init_without_steps(time_series)
         data_pl = self._alias_columns(data_pl, capacity_column)
         self._data_pl = data_pl
-        self._data_pd_cache = None
+
         self._apply_transforms()
 
     def _init_with_steps(self, time_series, steps):
@@ -688,7 +595,7 @@ class DataLoader:
             steps_pl, self._first_step, self._last_step
         )
         self._steps_pl = sliced_steps_pl
-        self._steps_pd_cache = None
+
         self._initial_voltage = initial_voltage
         self._start_idx = start_idx
         self._end_idx = end_idx
@@ -700,7 +607,7 @@ class DataLoader:
         time_series_pl = self._to_polars(time_series)
 
         self._steps_pl = None
-        self._steps_pd_cache = None
+
         self._original_time_series_pl = None
         self._original_steps_pl = None
         self._start_idx = 0
@@ -791,21 +698,16 @@ class DataLoader:
             self.transform_rest_to_ocp()
         if transforms.get("sort"):
             self._data_pl = self.sort_capacity_and_ocp(self._data_pl)
-            self._data_pd_cache = None
         if transforms.get("remove_duplicates"):
             self._data_pl = self.remove_duplicate_ocp(self._data_pl)
-            self._data_pd_cache = None
         if transforms.get("remove_extremes"):
             self._data_pl = self.remove_ocp_extremes(self._data_pl)
-            self._data_pd_cache = None
         filters = transforms.get("filters")
         if filters:
-            self._data_pl = self.filter_data_pl(self._data_pl, filters)
-            self._data_pd_cache = None
+            self._data_pl = self.filter_data(self._data_pl, filters)
         interpolate = transforms.get("interpolate")
         if interpolate is not None:
-            self._data_pl = self.interpolate_data_pl(self._data_pl, interpolate)
-            self._data_pd_cache = None
+            self._data_pl = self.interpolate_data(self._data_pl, interpolate)
 
     def _ensure_data_pl_has_step_count(self) -> pl.DataFrame:
         """Add 'Step count' to _data_pl from steps table if missing. Return _data_pl.
@@ -881,9 +783,8 @@ class DataLoader:
             (pl.col("Capacity [A.h]") - first_cap).alias("Capacity [A.h]")
         )
         self._data_pl = ocp_df
-        self._data_pd_cache = None
+
         self._steps_pl = None
-        self._steps_pd_cache = None
 
     def transform_gitt_to_ocp(self):
         """Extract OCP from GITT rest steps: take the last data point of each rest.
@@ -1558,13 +1459,10 @@ class DataLoader:
 
         # Initialize polars storage attributes (populated by _setup on lazy load)
         instance._data_pl = None  # noqa: SLF001
-        instance._data_pd_cache = None  # noqa: SLF001
         instance._steps_pl = None  # noqa: SLF001
-        instance._steps_pd_cache = None  # noqa: SLF001
 
         # Attributes that _setup / _init_with_steps normally initialise —
         # set safe defaults so attribute access before lazy load doesn't error.
-        instance._data_steps_warned = False  # noqa: SLF001
         instance._initial_voltage = None  # noqa: SLF001
         instance._original_time_series_pl = None  # noqa: SLF001
         instance._original_steps_pl = None  # noqa: SLF001
@@ -1616,7 +1514,6 @@ class DataLoader:
             instance._data_pl = pl.from_pandas(data)  # noqa: SLF001
         else:
             instance._data_pl = pl.DataFrame(data)  # noqa: SLF001
-        instance._data_pd_cache = None  # noqa: SLF001
         if steps is not None:
             if isinstance(steps, pl.DataFrame):
                 instance._steps_pl = steps.clone()  # noqa: SLF001
@@ -1626,13 +1523,10 @@ class DataLoader:
                 instance._steps_pl = pl.DataFrame(steps)  # noqa: SLF001
         else:
             instance._steps_pl = None  # noqa: SLF001
-        instance._steps_pd_cache = None  # noqa: SLF001
-        instance._data_steps_warned = False  # noqa: SLF001
         instance.initial_voltage = initial_voltage
         instance.start_idx = start_idx
         instance.end_idx = end_idx
         instance.set_processed_internal_state()
-        instance._data_pd_cache = None  # noqa: SLF001
         return instance
 
     def copy(self) -> DataLoader:

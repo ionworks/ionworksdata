@@ -74,6 +74,26 @@ def label_pulse(
     upper_pulse_cutoff = options_validated["upper pulse capacity cutoff"]
     current_direction = options_validated["current direction"]
 
+    # Require capacity columns and no nulls; otherwise do not apply labels
+    if (
+        "Discharge capacity [A.h]" not in steps_pl.columns
+        or "Charge capacity [A.h]" not in steps_pl.columns
+    ):
+        logger.warning(
+            "Pulse labeling requires 'Discharge capacity [A.h]' and 'Charge capacity [A.h]'; "
+            "skipping labels."
+        )
+        return steps_pl
+
+    # Check for nulls in required capacity columns
+    if (
+        steps_pl["Discharge capacity [A.h]"].is_null().any()
+        or steps_pl["Charge capacity [A.h]"].is_null().any()
+    ):
+        logger.warning("Pulse labeling requires non-null capacity; skipping labels.")
+        return steps_pl
+
+    # Get constant current steps
     pulse_steps = steps_pl.filter(
         pl.col("Step type").is_in(
             ["Constant current discharge", "Constant current charge"]

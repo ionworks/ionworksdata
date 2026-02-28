@@ -234,8 +234,8 @@ def test_interpolate_downsample_fixed_interval():
 
 
 def test_interpolate_data_skips_object_columns():
-    """interpolate_data skips object-dtype columns and does not raise."""
-    time_series = pd.DataFrame(
+    """interpolate_data skips non-numeric columns and does not raise."""
+    time_series = pl.DataFrame(
         {
             "Time [s]": np.linspace(0, 1000, 101),
             "Voltage [V]": 3.5 - 0.001 * np.linspace(0, 1000, 101),
@@ -249,14 +249,14 @@ def test_interpolate_data_skips_object_columns():
     assert "Current [A]" in result.columns
     assert "Label" not in result.columns
     np.testing.assert_allclose(
-        result["Voltage [V]"].values,
+        result["Voltage [V]"].to_numpy(),
         np.interp(
-            result["Time [s]"].values,
-            time_series["Time [s]"].values,
-            time_series["Voltage [V]"].values,
+            result["Time [s]"].to_numpy(),
+            time_series["Time [s]"].to_numpy(),
+            time_series["Voltage [V]"].to_numpy(),
         ),
     )
-    dt = np.diff(result["Time [s]"].values)
+    dt = np.diff(result["Time [s]"].to_numpy())
     np.testing.assert_allclose(dt, 10.0, atol=1e-10)
 
 
@@ -2895,77 +2895,28 @@ def test_ocpdataloader_deprecation_warning():
 # =============================================================================
 
 
-def test_data_pl_property_with_steps():
-    """Test that data_pl returns a polars DataFrame."""
-    import polars as pl
-
-    loader = iwdata.DataLoader.from_local(
-        Path("tests/test_data/cccv-synthetic-with-steps"),
-        {"first_step": 0, "last_step": 9},
-    )
-    assert isinstance(loader.data_pl, pl.DataFrame)
-    assert loader.data_pl.height == len(loader.data)
-    assert loader.data_pl.columns == list(loader.data.columns)
-
-
-def test_steps_pl_property():
-    """Test that steps_pl returns a polars DataFrame."""
-    import polars as pl
-
-    loader = iwdata.DataLoader.from_local(
-        Path("tests/test_data/cccv-synthetic-with-steps"),
-        {"first_step": 0, "last_step": 9},
-    )
-    assert isinstance(loader.steps_pl, pl.DataFrame)
-    assert loader.steps_pl.height == len(loader.steps)
-    assert loader.steps_pl.columns == list(loader.steps.columns)
-
-
-def test_steps_pl_none_without_steps():
-    """Test that steps_pl is None when no steps are loaded."""
-    data = pd.DataFrame(
-        {
-            "Voltage [V]": [3.5, 3.6, 3.7],
-            "Capacity [A.h]": [0.0, 0.1, 0.2],
-        }
-    )
-    loader = iwdata.DataLoader(data)
-    assert loader.steps_pl is None
-    assert loader.steps is None
-
-
 def test_no_pandas_conversion_during_init():
     """Test that no eager pandas conversion happens; .data returns Polars."""
     loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 0, "last_step": 9},
     )
-    # No pandas cache used for .data / .steps (they return polars)
-    assert loader._data_pd_cache is None  # noqa: SLF001
-    assert loader._steps_pd_cache is None  # noqa: SLF001
 
-    # Accessing .data returns polars; pandas cache remains unused
-    _ = loader.data
-    assert loader._data_pd_cache is None  # noqa: SLF001
+    # Accessing .data returns polars
     assert isinstance(loader.data, pl.DataFrame)
 
 
-def test_pandas_cache_invalidation_on_data_set():
+def test_data_set_updates_internal_polars():
     """Test that setting .data updates internal polars and .data returns new frame."""
-    import polars as pl
-
     loader = iwdata.DataLoader.from_local(
         Path("tests/test_data/cccv-synthetic-with-steps"),
         {"first_step": 0, "last_step": 9},
     )
     _ = loader.data
-    # No pandas cache used
-    assert loader._data_pd_cache is None  # noqa: SLF001
 
     # Set new data (polars)
     new_data = pl.DataFrame({"Voltage [V]": [1.0, 2.0], "Time [s]": [0.0, 1.0]})
     loader.data = new_data
-    assert loader._data_pd_cache is None  # noqa: SLF001
 
     # .data returns the new polars frame
     result = loader.data
@@ -2975,8 +2926,6 @@ def test_pandas_cache_invalidation_on_data_set():
 
 def test_polars_input_preserved_without_conversion():
     """Test that polars input stays in polars internally."""
-    import polars as pl
-
     ts = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/time_series.csv")
     steps = pl.read_csv("tests/test_data/cccv-synthetic-with-steps/steps.csv")
 
@@ -2986,25 +2935,18 @@ def test_polars_input_preserved_without_conversion():
     assert isinstance(loader._data_pl, pl.DataFrame)  # noqa: SLF001
     assert isinstance(loader._steps_pl, pl.DataFrame)  # noqa: SLF001
 
-    # No pandas cache built yet
-    assert loader._data_pd_cache is None  # noqa: SLF001
-    assert loader._steps_pd_cache is None  # noqa: SLF001
-
     # Public API returns Polars
     assert isinstance(loader.data, pl.DataFrame)
     assert isinstance(loader.steps, pl.DataFrame)
 
 
-def test_dataloader_data_pl_no_steps():
-    """Test DataLoader.data_pl property."""
-    import polars as pl
-
+def test_steps_none_without_steps():
+    """Test that steps is None when no steps are loaded."""
     data = pd.DataFrame(
         {
-            "Time [s]": [0, 1, 2],
-            "Voltage [V]": [3.0, 3.1, 3.2],
+            "Voltage [V]": [3.5, 3.6, 3.7],
+            "Capacity [A.h]": [0.0, 0.1, 0.2],
         }
     )
     loader = iwdata.DataLoader(data)
-    assert isinstance(loader.data_pl, pl.DataFrame)
-    assert loader.data_pl.height == 3
+    assert loader.steps is None

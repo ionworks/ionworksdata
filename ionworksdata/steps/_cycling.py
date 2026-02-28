@@ -62,6 +62,22 @@ def label_cycling(
         raise ValueError("cell_metadata is required")
     Q = cell_metadata["Nominal cell capacity [A.h]"]
 
+    # Check for necessary columns and non-null values
+    required_cols = ["Discharge capacity [A.h]", "Charge capacity [A.h]"]
+    for col in required_cols:
+        if col not in steps_pl.columns:
+            logger.warning(
+                "Cycling labeling requires 'Discharge capacity [A.h]' and 'Charge capacity [A.h]'; "
+                "skipping labels."
+            )
+            return steps_pl
+        if steps_pl[col].is_null().any():
+            logger.warning(
+                "Cycling labeling requires non-null capacity; skipping labels."
+            )
+            return steps_pl
+
+    # Always use polars DataFrame for cycling detection
     discharge_cap = steps_pl["Discharge capacity [A.h]"].abs()
     charge_cap = steps_pl["Charge capacity [A.h]"].abs()
     dQ = (discharge_cap - charge_cap).abs()

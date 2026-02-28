@@ -23,6 +23,11 @@ def pytest_configure(config):
         "filterwarnings",
         "ignore:CSV reader does not support reading start time from file:UserWarning",
     )
+    # Ignore Polars migration warnings from DataLoader
+    config.addinivalue_line(
+        "filterwarnings",
+        "ignore:DataLoader.data and .steps now return Polars DataFrames:FutureWarning",
+    )
 
 
 pytest_plugins = [

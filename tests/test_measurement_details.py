@@ -180,6 +180,11 @@ def test_label_measurement_details():
             "Current [A]": [1, 1, 1],
             "Voltage [V]": [4.0, 3.0, 2.0],
             "Step number": [0, 0, 0],
+            "Capacity [A.h]": [
+                0.0,
+                0.5,
+                1.0,
+            ],  # needed for step capacity and cycling label
         }
     )
     measurement_details = iwdata.read.measurement_details(

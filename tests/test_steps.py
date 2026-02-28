@@ -1,7 +1,9 @@
+import numpy as np
 import pandas as pd
 import polars as pl
+import pytest
+
 import ionworksdata as iwdata
-import numpy as np
 
 
 def test_steps_with_cycle_count():
@@ -457,14 +459,15 @@ def test_summarize_with_polars():
 
 
 def test_step_capacity_always_positive():
-    """Test that step-level discharge and charge capacity are always >= 0."""
-    # Test case 1: Pure discharge steps
+    """Test that step-level discharge and charge capacity are always >= 0 when Capacity [A.h] present."""
+    # Test case 1: Pure discharge steps (capacity computed from Capacity [A.h])
     data1 = pd.DataFrame(
         {
             "Time [s]": [0, 1, 2, 3, 4, 5],
             "Voltage [V]": [4.0, 3.9, 3.8, 3.7, 3.6, 3.5],
             "Current [A]": [1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
             "Step count": [0, 0, 0, 1, 1, 1],
+            "Capacity [A.h]": [0.0, 0.1, 0.2, 0.2, 0.2, 0.2],
         }
     )
     steps1 = iwdata.steps.summarize(data1).to_pandas()
@@ -478,6 +481,7 @@ def test_step_capacity_always_positive():
             "Voltage [V]": [3.0, 3.1, 3.2, 3.3, 3.4, 3.5],
             "Current [A]": [-1.0, -1.0, -1.0, 0.0, 0.0, 0.0],
             "Step count": [0, 0, 0, 1, 1, 1],
+            "Capacity [A.h]": [0.2, 0.1, 0.0, 0.0, 0.0, 0.0],
         }
     )
     steps2 = iwdata.steps.summarize(data2).to_pandas()
@@ -491,6 +495,7 @@ def test_step_capacity_always_positive():
             "Voltage [V]": [4.0, 3.9, 3.8, 3.7, 3.6, 3.7, 3.8, 3.9],
             "Current [A]": [1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0],
             "Step count": [0, 0, 1, 1, 2, 2, 3, 3],
+            "Capacity [A.h]": [0.0, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.2],
         }
     )
     steps3 = iwdata.steps.summarize(data3).to_pandas()
@@ -504,6 +509,7 @@ def test_step_capacity_always_positive():
             "Voltage [V]": [4.0, 3.9, 3.8, 3.8, 3.8, 3.8],
             "Current [A]": [1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             "Step count": [0, 0, 1, 1, 1, 1],
+            "Capacity [A.h]": [0.0, 0.1, 0.2, 0.2, 0.2, 0.2],
         }
     )
     steps4 = iwdata.steps.summarize(data4).to_pandas()
@@ -522,11 +528,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 0, 1, 1, 1],
         }
     )
-    steps1 = iwdata.steps.summarize(data1).to_pandas()
+    steps1 = iwdata.steps.summarize(data1)
     if "Discharge energy [W.h]" in steps1.columns:
-        assert all(steps1["Discharge energy [W.h]"] >= 0)
+        non_null = steps1["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps1.columns:
-        assert all(steps1["Charge energy [W.h]"] >= 0)
+        non_null = steps1["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 2: Pure charge steps
     data2 = pd.DataFrame(
@@ -537,11 +545,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 0, 1, 1, 1],
         }
     )
-    steps2 = iwdata.steps.summarize(data2).to_pandas()
+    steps2 = iwdata.steps.summarize(data2)
     if "Discharge energy [W.h]" in steps2.columns:
-        assert all(steps2["Discharge energy [W.h]"] >= 0)
+        non_null = steps2["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps2.columns:
-        assert all(steps2["Charge energy [W.h]"] >= 0)
+        non_null = steps2["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 3: Mixed discharge and charge steps
     data3 = pd.DataFrame(
@@ -552,11 +562,13 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 1, 1, 2, 2, 3, 3],
         }
     )
-    steps3 = iwdata.steps.summarize(data3).to_pandas()
+    steps3 = iwdata.steps.summarize(data3)
     if "Discharge energy [W.h]" in steps3.columns:
-        assert all(steps3["Discharge energy [W.h]"] >= 0)
+        non_null = steps3["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps3.columns:
-        assert all(steps3["Charge energy [W.h]"] >= 0)
+        non_null = steps3["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
 
     # Test case 4: With rest steps (zero energy)
     data4 = pd.DataFrame(
@@ -567,8 +579,137 @@ def test_step_energy_always_positive():
             "Step count": [0, 0, 1, 1, 1, 1],
         }
     )
-    steps4 = iwdata.steps.summarize(data4).to_pandas()
+    steps4 = iwdata.steps.summarize(data4)
     if "Discharge energy [W.h]" in steps4.columns:
-        assert all(steps4["Discharge energy [W.h]"] >= 0)
+        non_null = steps4["Discharge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
     if "Charge energy [W.h]" in steps4.columns:
-        assert all(steps4["Charge energy [W.h]"] >= 0)
+        non_null = steps4["Charge energy [W.h]"].drop_nulls()
+        assert all(v >= 0 for v in non_null.to_list())
+
+
+def test_summarize_ocp_capacity_only():
+    """Test summarize on OCP-style data that has only Capacity [A.h] and Voltage [V] (no Time [s])."""
+    # OCP data from e.g. gitt_to_ocp has Capacity [A.h] and Voltage [V] only.
+    # Without Current [A], single Capacity can't be split into discharge/charge.
+    ocp_data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Voltage [V]": [3.5, 3.45, 3.40, 3.35, 3.30],
+            "Step count": [0, 0, 0, 0, 0],
+        }
+    )
+    steps = iwdata.steps.summarize(ocp_data)
+    assert len(steps) == 1
+    assert steps["Start index"].to_list() == [0]
+    assert steps["End index"].to_list() == [4]
+    # No Current [A] -> can't split capacity by direction -> null
+    assert steps["Discharge capacity [A.h]"].null_count() == 1
+    assert steps["Charge capacity [A.h]"].null_count() == 1
+    # Current/power stats null without Current [A]
+    assert steps["Mean current [A]"].null_count() == 1
+    assert steps["Mean power [W]"].null_count() == 1
+    # Time-derived columns present as null when Time [s] not in input (DB gets NULL)
+    assert "Start time [s]" in steps.columns
+    assert "End time [s]" in steps.columns
+    assert "Duration [s]" in steps.columns
+    assert steps["Start time [s]"].null_count() == 1
+    assert steps["End time [s]"].null_count() == 1
+    assert steps["Duration [s]"].null_count() == 1
+
+
+def test_summarize_ocp_with_presplit_capacity():
+    """Test summarize with pre-split discharge/charge capacity but no current."""
+    data = pd.DataFrame(
+        {
+            "Capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Discharge capacity [A.h]": [0.0, 0.05, 0.10, 0.15, 0.20],
+            "Charge capacity [A.h]": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "Voltage [V]": [3.5, 3.45, 3.40, 3.35, 3.30],
+            "Step count": [0, 0, 0, 0, 0],
+        }
+    )
+    steps = iwdata.steps.summarize(data)
+    assert len(steps) == 1
+    assert steps["Discharge capacity [A.h]"].to_list() == [0.2]
+    assert steps["Charge capacity [A.h]"].to_list() == [0.0]
+
+
+def test_identify_accepts_stoichiometry_only():
+    """Identify/summarize accepts time series with only Stoichiometry as x-axis (no Time, no Capacity)."""
+    data = pl.DataFrame(
+        {
+            "Stoichiometry": [0.9, 0.8, 0.7, 0.6],
+            "Voltage [V]": [3.5, 3.4, 3.3, 3.2],
+            "Step count": [0, 0, 1, 1],
+        }
+    )
+    steps = iwdata.steps.summarize(data)
+    assert len(steps) == 2
+    assert steps["Start index"].to_list() == [0, 2]
+    assert steps["End index"].to_list() == [1, 3]
+    # Capacity not present in input -> step capacity columns are null
+    assert steps["Discharge capacity [A.h]"].null_count() == 2
+    assert steps["Charge capacity [A.h]"].null_count() == 2
+    # Time not present -> time columns null
+    assert steps["Start time [s]"].null_count() == 2
+    assert steps["Duration [s]"].null_count() == 2
+
+
+def test_identify_accepts_soc_only():
+    """Identify/summarize accepts time series with only SOC as x-axis (no Time, no Capacity)."""
+    data = pl.DataFrame(
+        {
+            "SOC": [1.0, 0.8, 0.6, 0.4],
+            "Voltage [V]": [4.0, 3.9, 3.8, 3.7],
+            "Step count": [0, 0, 1, 1],
+        }
+    )
+    steps = iwdata.steps.summarize(data)
+    assert len(steps) == 2
+    assert steps["Start index"].to_list() == [0, 2]
+    assert steps["End index"].to_list() == [1, 3]
+    assert steps["Discharge capacity [A.h]"].null_count() == 2
+    assert steps["Charge capacity [A.h]"].null_count() == 2
+    assert steps["Start time [s]"].null_count() == 2
+
+
+def test_identify_raises_when_no_x_axis():
+    """Identify raises KeyError when none of Time, Capacity, Stoichiometry, SOC present."""
+    data = pl.DataFrame(
+        {
+            "Voltage [V]": [3.5, 3.4, 3.3],
+            "Step count": [0, 0, 1],
+        }
+    )
+    with pytest.raises(KeyError) as exc_info:
+        iwdata.steps.identify(data)
+    msg = str(exc_info.value)
+    assert "Time [s]" in msg
+    assert "Capacity [A.h]" in msg
+    assert "Stoichiometry" in msg
+    assert "SOC" in msg
+
+
+def test_summarize_with_time_only_no_capacity():
+    """With Time [s] but no Capacity [A.h], steps have null capacity; summarize and cycle caps work."""
+    data = pl.DataFrame(
+        {
+            "Time [s]": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "Voltage [V]": [4.0, 3.9, 3.8, 3.7, 3.6],
+            "Current [A]": [1.0, 1.0, 0.0, 0.0, 0.0],
+            "Step count": [0, 0, 0, 1, 1],
+        }
+    )
+    steps = iwdata.steps.summarize(data)
+    assert len(steps) == 2
+    # Duration from time is present
+    assert steps["Duration [s]"].to_list() == [2.0, 1.0]
+    # Capacity columns present but null (no Capacity [A.h] in input)
+    assert steps["Discharge capacity [A.h]"].null_count() == 2
+    assert steps["Charge capacity [A.h]"].null_count() == 2
+    # Cycle capacity columns added by summarize; null when step capacities are null
+    assert "Cycle charge capacity [A.h]" in steps.columns
+    assert "Cycle discharge capacity [A.h]" in steps.columns
+    assert steps["Cycle charge capacity [A.h]"].null_count() == 2
+    assert steps["Cycle discharge capacity [A.h]"].null_count() == 2

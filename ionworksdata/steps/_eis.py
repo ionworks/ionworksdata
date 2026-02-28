@@ -65,8 +65,6 @@ def label_eis(
         "Group number",
         [
             step_to_group.get(s, orig_groups[i])
-            if steps_pl["Step type"][i] == "EIS"
-            else orig_groups[i]
             for i, s in enumerate(steps_pl["Step count"].to_list())
         ],
     )
