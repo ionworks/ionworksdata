@@ -2950,3 +2950,21 @@ def test_steps_none_without_steps():
     )
     loader = iwdata.DataLoader(data)
     assert loader.steps is None
+
+
+def test_dataloader_from_db_copy_before_data_access():
+    """DataLoader.copy() must work on a lazy-loaded from_db instance
+    even when .data has not been accessed yet."""
+    from unittest.mock import patch
+
+    time_series, steps = _make_test_data()
+    mock_client = _make_mock_client(time_series, steps)
+
+    with patch("ionworks.Ionworks", return_value=mock_client):
+        dl = iwdata.DataLoader.from_db("test-id", use_cache=False)
+        # copy() before any .data access — this used to raise
+        # AttributeError: 'NoneType' object has no attribute 'clone'
+        dl_copy = dl.copy()
+
+    assert isinstance(dl_copy, iwdata.DataLoader)
+    pd.testing.assert_frame_equal(dl_copy.data.to_pandas(), dl.data.to_pandas())

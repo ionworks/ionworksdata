@@ -1531,6 +1531,7 @@ class DataLoader:
 
     def copy(self) -> DataLoader:
         """Create a copy of the DataLoader instance."""
+        self._ensure_time_series_loaded()
         return DataLoader.from_processed_data(
             data=self._data_pl.clone(),
             steps=self._steps_pl.clone() if self._steps_pl is not None else None,
