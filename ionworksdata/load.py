@@ -934,7 +934,7 @@ class DataLoader:
         float
             Cut-off for dUdQ
         """
-        data = self.data_pl
+        data = self._data_pl
         q = data["Capacity [A.h]"].to_numpy()
         U = data["Voltage [V]"].to_numpy()
         dUdQ = abs(np.gradient(U, q))
@@ -968,7 +968,7 @@ class DataLoader:
         float
             Cut-off for dQdU
         """
-        data = self.data_pl
+        data = self._data_pl
         U = data["Voltage [V]"].to_numpy()
         q = data["Capacity [A.h]"].to_numpy()
         dQdU = abs(np.gradient(q, U))
@@ -1531,6 +1531,7 @@ class DataLoader:
 
     def copy(self) -> DataLoader:
         """Create a copy of the DataLoader instance."""
+        self._ensure_time_series_loaded()
         return DataLoader.from_processed_data(
             data=self._data_pl.clone(),
             steps=self._steps_pl.clone() if self._steps_pl is not None else None,
