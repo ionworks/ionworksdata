@@ -906,6 +906,17 @@ def test_parameter_conflicts():
         )
 
 
+def test_first_step_last_step_order():
+    """Test that last_step < first_step raises ValueError."""
+    with pytest.raises(
+        ValueError, match="last_step \\(.*\\) must not be less than first_step \\(.*\\)"
+    ):
+        iwdata.DataLoader.from_local(
+            Path("tests/test_data/cccv-synthetic-with-steps"),
+            {"first_step": 5, "last_step": 2},
+        )
+
+
 def test_dataloader_with_polars_input():
     """Test that DataLoader accepts Polars DataFrames as input."""
     import polars as pl
