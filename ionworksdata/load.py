@@ -552,6 +552,12 @@ class DataLoader:
         first_step_idx = self._get_step(first_step, steps_pl, first=True)
         last_step_idx = self._get_step(last_step, steps_pl, first=False)
 
+        if last_step_idx < first_step_idx:
+            raise ValueError(
+                f"last_step ({last_step_idx}) must not be less than "
+                f"first_step ({first_step_idx})"
+            )
+
         sliced_steps_pl = steps_pl.slice(
             first_step_idx, last_step_idx - first_step_idx + 1
         )
