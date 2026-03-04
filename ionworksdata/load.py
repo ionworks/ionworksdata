@@ -412,9 +412,7 @@ class DataLoader:
         if not steps_from_cache:
             from ionworks import Ionworks
 
-            api_key = getattr(self, "_lazy_api_key", None)
-            api_url = getattr(self, "_lazy_api_url", None)
-            client = Ionworks(timeout=timeout, api_key=api_key, api_url=api_url)
+            client = getattr(self, "_lazy_client", None) or Ionworks(timeout=timeout)
             steps = client.cell_measurement.steps(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"steps": steps})
@@ -459,9 +457,7 @@ class DataLoader:
         if time_series is None:
             from ionworks import Ionworks
 
-            api_key = getattr(self, "_lazy_api_key", None)
-            api_url = getattr(self, "_lazy_api_url", None)
-            client = Ionworks(timeout=timeout, api_key=api_key, api_url=api_url)
+            client = getattr(self, "_lazy_client", None) or Ionworks(timeout=timeout)
             time_series = client.cell_measurement.time_series(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"time_series": time_series})
@@ -1433,8 +1429,7 @@ class DataLoader:
         options: dict | None = None,
         use_cache: bool = True,
         timeout: int | None = None,
-        api_key: str | None = None,
-        api_url: str | None = None,
+        client=None,
     ) -> DataLoader:
         """
         Load data from the Ionworks database (lazy loading).
@@ -1458,10 +1453,9 @@ class DataLoader:
             Set to False to force a fresh load from the database.
         timeout : int | None, optional
             Request timeout in seconds passed to the Ionworks client.
-        api_key : str | None, optional
-            API key for the Ionworks client. Overrides the IONWORKS_API_KEY env var.
-        api_url : str | None, optional
-            API URL for the Ionworks client. Overrides the IONWORKS_API_URL env var.
+        client : ionworks.Ionworks | None, optional
+            Pre-configured Ionworks client. If not provided, a default
+            ``Ionworks()`` client is created (using env vars).
 
         Returns
         -------
@@ -1515,8 +1509,7 @@ class DataLoader:
         instance._lazy_time_series_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
         instance._lazy_timeout = timeout  # noqa: SLF001
-        instance._lazy_api_key = api_key  # noqa: SLF001
-        instance._lazy_api_url = api_url  # noqa: SLF001
+        instance._lazy_client = client  # noqa: SLF001
 
         return instance
 
@@ -1617,8 +1610,7 @@ class OCPDataLoader(DataLoader):
         options=None,
         use_cache=True,
         timeout=None,
-        api_key=None,
-        api_url=None,
+        client=None,
     ):
         warnings.warn(
             "OCPDataLoader.from_db is deprecated. Use DataLoader.from_db instead.",
@@ -1630,6 +1622,5 @@ class OCPDataLoader(DataLoader):
             options=options,
             use_cache=use_cache,
             timeout=timeout,
-            api_key=api_key,
-            api_url=api_url,
+            client=client,
         )
