@@ -399,7 +399,6 @@ class DataLoader:
         self._lazy_steps_pending = False
         measurement_id = self._measurement_id
         use_cache = getattr(self, "_lazy_use_cache", True)
-        timeout = getattr(self, "_lazy_timeout", None)
 
         steps = None
         steps_from_cache = False
@@ -412,7 +411,7 @@ class DataLoader:
         if not steps_from_cache:
             from ionworks import Ionworks
 
-            client = Ionworks(timeout=timeout)
+            client = getattr(self, "_lazy_client", None) or Ionworks()
             steps = client.cell_measurement.steps(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"steps": steps})
@@ -445,7 +444,6 @@ class DataLoader:
         self._lazy_time_series_pending = False
         measurement_id = self._measurement_id
         use_cache = getattr(self, "_lazy_use_cache", True)
-        timeout = getattr(self, "_lazy_timeout", None)
         capacity_column = getattr(self, "_capacity_column", None)
 
         time_series = None
@@ -457,7 +455,7 @@ class DataLoader:
         if time_series is None:
             from ionworks import Ionworks
 
-            client = Ionworks(timeout=timeout)
+            client = getattr(self, "_lazy_client", None) or Ionworks()
             time_series = client.cell_measurement.time_series(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"time_series": time_series})
@@ -1423,7 +1421,13 @@ class DataLoader:
         return cls(time_series, steps, **options)
 
     @classmethod
-    def from_db(cls, measurement_id, options=None, use_cache=True, timeout=None):
+    def from_db(
+        cls,
+        measurement_id: str,
+        options: dict | None = None,
+        use_cache: bool = True,
+        client=None,
+    ) -> DataLoader:
         """
         Load data from the Ionworks database (lazy loading).
 
@@ -1443,13 +1447,33 @@ class DataLoader:
             Options to pass to the DataLoader constructor.
         use_cache : bool, optional
             If True (default), use local file cache to avoid repeated API calls.
-        timeout : int | None, optional
-            Request timeout in seconds passed to the Ionworks client.
+            Set to False to force a fresh load from the database.
+        client : ionworks.Ionworks | None, optional
+            Pre-configured Ionworks client. If not provided, a default
+            ``Ionworks()`` client is created (using env vars).
 
         Returns
         -------
         DataLoader
         """
+        # Eager path: use cached data when available
+        if use_cache:
+            cached_data = _load_from_cache(measurement_id)
+            if (
+                cached_data is not None
+                and "time_series" in cached_data
+                and "steps" in cached_data
+            ):
+                options = options or {}
+                instance = cls(
+                    cached_data["time_series"],
+                    cached_data["steps"],
+                    **options,
+                )
+                instance._measurement_id = measurement_id  # noqa: SLF001
+                return instance
+
+        # Lazy path: defer fetch until first access
         options = options or {}
         instance = cls.__new__(cls)
 
@@ -1479,7 +1503,7 @@ class DataLoader:
         instance._lazy_steps_pending = True  # noqa: SLF001
         instance._lazy_time_series_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
-        instance._lazy_timeout = timeout  # noqa: SLF001
+        instance._lazy_client = client  # noqa: SLF001
 
         return instance
 
@@ -1574,12 +1598,21 @@ class OCPDataLoader(DataLoader):
         super().__init__(data, steps=None, **merged)
 
     @classmethod
-    def from_db(cls, measurement_id, options=None, use_cache=True, timeout=None):
+    def from_db(
+        cls,
+        measurement_id,
+        options=None,
+        use_cache=True,
+        client=None,
+    ):
         warnings.warn(
             "OCPDataLoader.from_db is deprecated. Use DataLoader.from_db instead.",
             DeprecationWarning,
             stacklevel=2,
         )
         return DataLoader.from_db(
-            measurement_id, options=options, use_cache=use_cache, timeout=timeout
+            measurement_id,
+            options=options,
+            use_cache=use_cache,
+            client=client,
         )
