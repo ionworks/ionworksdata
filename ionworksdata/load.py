@@ -399,7 +399,6 @@ class DataLoader:
         self._lazy_steps_pending = False
         measurement_id = self._measurement_id
         use_cache = getattr(self, "_lazy_use_cache", True)
-        timeout = getattr(self, "_lazy_timeout", None)
 
         steps = None
         steps_from_cache = False
@@ -412,7 +411,7 @@ class DataLoader:
         if not steps_from_cache:
             from ionworks import Ionworks
 
-            client = getattr(self, "_lazy_client", None) or Ionworks(timeout=timeout)
+            client = getattr(self, "_lazy_client", None) or Ionworks()
             steps = client.cell_measurement.steps(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"steps": steps})
@@ -445,7 +444,6 @@ class DataLoader:
         self._lazy_time_series_pending = False
         measurement_id = self._measurement_id
         use_cache = getattr(self, "_lazy_use_cache", True)
-        timeout = getattr(self, "_lazy_timeout", None)
         capacity_column = getattr(self, "_capacity_column", None)
 
         time_series = None
@@ -457,7 +455,7 @@ class DataLoader:
         if time_series is None:
             from ionworks import Ionworks
 
-            client = getattr(self, "_lazy_client", None) or Ionworks(timeout=timeout)
+            client = getattr(self, "_lazy_client", None) or Ionworks()
             time_series = client.cell_measurement.time_series(measurement_id)
             if use_cache:
                 _save_to_cache(measurement_id, {"time_series": time_series})
@@ -1428,7 +1426,6 @@ class DataLoader:
         measurement_id: str,
         options: dict | None = None,
         use_cache: bool = True,
-        timeout: int | None = None,
         client=None,
     ) -> DataLoader:
         """
@@ -1451,8 +1448,6 @@ class DataLoader:
         use_cache : bool, optional
             If True (default), use local file cache to avoid repeated API calls.
             Set to False to force a fresh load from the database.
-        timeout : int | None, optional
-            Request timeout in seconds passed to the Ionworks client.
         client : ionworks.Ionworks | None, optional
             Pre-configured Ionworks client. If not provided, a default
             ``Ionworks()`` client is created (using env vars).
@@ -1508,7 +1503,6 @@ class DataLoader:
         instance._lazy_steps_pending = True  # noqa: SLF001
         instance._lazy_time_series_pending = True  # noqa: SLF001
         instance._lazy_use_cache = use_cache  # noqa: SLF001
-        instance._lazy_timeout = timeout  # noqa: SLF001
         instance._lazy_client = client  # noqa: SLF001
 
         return instance
@@ -1609,7 +1603,6 @@ class OCPDataLoader(DataLoader):
         measurement_id,
         options=None,
         use_cache=True,
-        timeout=None,
         client=None,
     ):
         warnings.warn(
@@ -1621,6 +1614,5 @@ class OCPDataLoader(DataLoader):
             measurement_id,
             options=options,
             use_cache=use_cache,
-            timeout=timeout,
             client=client,
         )
