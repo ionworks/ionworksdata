@@ -51,11 +51,6 @@ def _has_biologic_time_col(text: str) -> bool:
     return any(t in text_lower for t in ["time/s"])
 
 
-def _is_maccor_text_extension(ext: str) -> bool:
-    """Check if extension is .txt or .+3-4 digits (e.g., .123, .0011)"""
-    return ext == ".txt" or (len(ext) in (4, 5) and ext[1:].isdigit())
-
-
 def _has_maccor_time_col(text: str) -> bool:
     """Check if text contains Maccor time column names (case-insensitive)."""
     text_lower = text.lower()
@@ -166,8 +161,8 @@ def detect_reader(filename: str | Path) -> str:
         if "Step" in first_line and _has_maccor_time_col(first_line):
             return "maccor"
 
-    # Maccor .txt files or .+3digits: tab-separated with "Step" in header
-    if is_maccor_text_extension(ext) and "\t" in first_line:
+    # Maccor .txt files or .+3digits: tab- or comma-separated with "Step" in header
+    if is_maccor_text_extension(ext):
         for line in first_lines:
             if "Step" in line and _has_maccor_time_col(line):
                 return "maccor"

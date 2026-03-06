@@ -714,6 +714,49 @@ def test_maccor_xlsx_excel_time_format():
     assert "Charge energy [W.h]" in df.columns
 
 
+def test_maccor_csv_txt():
+    """Test reading a comma-separated .txt Maccor file (e.g. InSitu PPHG export)."""
+    p = Path("tests/test_data/maccor_csv.txt")
+    extra_column_mappings = {
+        "Aux #1": "Aux 1",
+        "Calc InSitu Thickness": "In-situ thickness",
+        "EVHum (%)": "Humidity [%]",
+        "ACImp (Ohms)": "AC impedance [Ohms]",
+        "DCIR (Ohms)": "DCIR [Ohms]",
+    }
+    df = iwdata.read.time_series(
+        p,
+        extra_column_mappings=extra_column_mappings,
+        options={"time_offset_fix": 1},
+    )
+
+    assert "Time [s]" in df.columns
+    assert "Current [A]" in df.columns
+    assert "Voltage [V]" in df.columns
+    assert "Step from cycler" in df.columns
+    assert "Temperature [degC]" in df.columns
+
+    # Extra columns should be preserved
+    assert "Aux 1" in df.columns
+    assert "In-situ thickness" in df.columns
+    assert "Humidity [%]" in df.columns
+
+    assert len(df) == 10
+    assert df["Time [s]"][0] == 0.0
+    assert df["Voltage [V]"][0] == pytest.approx(3.782)
+    assert df["Temperature [degC]"][0] == pytest.approx(25.0)
+
+
+def test_maccor_csv_txt_auto_detect():
+    """Test that a comma-separated .txt Maccor file is auto-detected and read."""
+    p = Path("tests/test_data/maccor_csv.txt")
+    df = iwdata.read.time_series(p, options={"time_offset_fix": 1})
+    assert len(df) == 10
+    assert "Time [s]" in df.columns
+    assert "Current [A]" in df.columns
+    assert "Voltage [V]" in df.columns
+
+
 def test_maccor_time_strictly_increasing(tmp_path):
     """Test that time is validated to be strictly increasing"""
     # Create test data with time that goes backwards

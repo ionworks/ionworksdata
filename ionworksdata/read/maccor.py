@@ -71,16 +71,26 @@ class Maccor(BaseReader):
                 if skiprows is None:
                     raise ValueError("Could not find header row in Maccor file")
             elif is_maccor_text_extension(ext):
-                reader = f.readlines()
-                sep = "\t"
-                thousands = ","
+                lines = f.readlines()
                 units_row = False
                 comment = None
-                for i, row in enumerate(reader):
-                    if "Step" in row:
-                        skiprows = i
+                skiprows = None
+                sep = "\t"
+                thousands = ","
+                for i, line in enumerate(lines):
+                    for candidate_sep, candidate_thousands in [
+                        ("\t", ","),
+                        (",", None),
+                    ]:
+                        row = [c.strip() for c in line.split(candidate_sep)]
+                        if "Step" in row:
+                            skiprows = i
+                            sep = candidate_sep
+                            thousands = candidate_thousands
+                            break
+                    if skiprows is not None:
                         break
-                else:
+                if skiprows is None:
                     raise ValueError("Could not find header row in Maccor file")
             else:
                 raise ValueError(f"Unsupported file extension: {ext}")

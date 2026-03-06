@@ -225,5 +225,12 @@ def test_detect_reader_excel_empty_dataframe(tmp_path):
             iwdata.read.detect_reader(excel_file)
 
 
+def test_detect_reader_maccor_csv_txt():
+    """Test detecting Maccor reader from comma-separated .txt file"""
+    p = Path("tests/test_data/maccor_csv.txt")
+    detected = iwdata.read.detect_reader(p)
+    assert detected == "maccor"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
