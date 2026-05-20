@@ -482,6 +482,23 @@ def time_series_and_steps(
                 logger.info("Detected wrong current sign convention, auto-fixing...")
                 # Flip current sign
                 data = data.with_columns((-pl.col("Current [A]")).alias("Current [A]"))
+                # Drop the stale capacity/energy columns from the first pass
+                # before recomputing. _calculate_capacity / _calculate_energy
+                # short-circuit when these columns already exist (just taking
+                # abs()), which would leave the charge/discharge labels
+                # swapped under the new sign convention. Force the integration
+                # path by clearing them first.
+                stale = [
+                    c for c in (
+                        "Discharge capacity [A.h]",
+                        "Charge capacity [A.h]",
+                        "Discharge energy [W.h]",
+                        "Charge energy [W.h]",
+                    )
+                    if c in data.columns
+                ]
+                if stale:
+                    data = data.drop(stale)
                 # Recalculate capacity and energy with correct sign
                 data = iwdata.transform.set_capacity(data, options=reader_options)
                 data = iwdata.transform.set_energy(data, options=reader_options)
