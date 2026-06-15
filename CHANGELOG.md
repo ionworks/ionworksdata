@@ -9,6 +9,24 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [Unreleased]
+
+### Added
+- ``set_positive_current_for_discharge`` now accepts a ``direction``
+  option (``"charge"`` or ``"discharge"``) that signs all non-rest
+  current in a measurement deterministically, bypassing the ambiguous
+  voltage-response heuristic. This is the recommended path for per-file
+  deliveries (one file = one operation) and is required to correctly
+  sign negative-electrode (anode) half-cells (#3).
+
+### Fixed
+- ``set_positive_current_for_discharge`` no longer silently inverts the
+  current sign for anode half-cells. The voltage-response fallback
+  assumed OCV increases with state-of-charge (true for full cells and
+  cathode half-cells, false for anode half-cells whose OCV falls on
+  charge); when the fallback is used with low confidence it now emits a
+  warning pointing callers at the new ``direction`` option (#3).
+
 ## [0.10.0] - 2026-06-10
 
 ### Added

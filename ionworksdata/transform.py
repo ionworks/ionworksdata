@@ -17,6 +17,27 @@ import polars as pl
 
 import ionworksdata as iwdata
 
+# Confidence threshold for the voltage-response charge/discharge heuristic.
+# ``positive_current_is_charge`` returns a ``p_value`` in [0, 1] where higher
+# means *less* confident (1.0 = fully ambiguous). When the chosen
+# classification is at or above this threshold we cannot reliably tell charge
+# from discharge from the voltage response alone — most importantly, anode
+# half-cells (OCV falls with SOC) are systematically mis-classified by this
+# heuristic — so we emit a warning pointing the caller at the ``direction``
+# option. 0.5 is a deliberately conservative cutoff: it only fires on the
+# genuinely low-confidence / near-tie cases rather than on every step.
+_VOLTAGE_HEURISTIC_AMBIGUOUS_P = 0.5
+
+_VOLTAGE_HEURISTIC_WARNING = (
+    "set_positive_current_for_discharge inferred charge/discharge direction "
+    "from the voltage response with low confidence (the measurement has no "
+    "mode/Status column). This heuristic assumes OCV increases with "
+    "state-of-charge and so SILENTLY INVERTS the sign for negative-electrode "
+    "(anode) half-cells, whose OCV falls on charge. If you know the operation, "
+    "pass options={'direction': 'charge'} or {'direction': 'discharge'} to "
+    "bypass the heuristic."
+)
+
 
 def _sign_with_tolerance(x: np.ndarray, tol: float | None = None) -> np.ndarray:
     if tol is None:
@@ -908,12 +929,39 @@ def set_positive_current_for_discharge(
     options : dict, optional
         Additional options to pass to the function. The default is None.
 
+        - ``direction``: Explicit direction override for absolute-value
+          (unsigned) measurements. When set, *all* non-rest current in the
+          measurement is treated as the given operation and signed
+          accordingly, bypassing the ambiguous voltage-response heuristic.
+          This is the recommended option for per-file deliveries where each
+          file is a single operation, and it is *required* to correctly
+          sign negative-electrode (anode) half-cells, whose OCV falls with
+          state-of-charge and therefore fool the voltage-response heuristic.
+          Allowed values:
+
+            - ``None`` (default): auto-detect via mode column / voltage
+              response (backward-compatible behavior).
+            - ``"charge"``: all non-rest current is charge -> negative.
+            - ``"discharge"``: all non-rest current is discharge -> positive.
+
     Returns
     -------
     pl.DataFrame
         The data with the current direction set to positive current is discharging.
     """
     options = options or {}
+
+    # Validate the ``direction`` override against its allowed values, mirroring
+    # the OptionSpec / check_and_combine_options pattern used by the other
+    # transforms (e.g. ``set_step_count``). ``filter_unknown=True`` leaves the
+    # other free-form keys (``current units``, ``EIS tolerance``, step-count
+    # options, ...) untouched while still validating ``direction``.
+    direction = iwutil.check_and_combine_options(
+        {"direction": iwutil.OptionSpec(None, ["charge", "discharge"])},
+        options,
+        filter_unknown=True,
+    )["direction"]
+
     options["method"] = "current sign"
 
     current_units, _ = iwdata.util.get_current_and_capacity_units(options)
@@ -930,6 +978,16 @@ def set_positive_current_for_discharge(
     all_positive = bool((non_rest_current > 0).all())
     all_negative = bool((non_rest_current < 0).all())
     all_same_sign = all_positive or all_negative
+
+    # --- Direction override -------------------------------------------------
+    # When the caller knows the operation (the common per-file delivery case),
+    # honor it directly and skip the ambiguous voltage heuristic. This is the
+    # only reliable path for anode half-cells, whose V-vs-Q slope is inverted
+    # relative to full cells / cathode half-cells.
+    if direction is not None:
+        return _fix_sign_from_direction(
+            data, current_col, direction, rest_tol
+        )
 
     if all_same_sign:
         # --- Step 2: check for a mode column (e.g. "Status") ---------------
@@ -966,6 +1024,35 @@ def _fix_sign_from_mode_column(
     return data.with_columns(
         pl.when(pl.col("Status") == "C")
         .then(-pl.col(current_col))
+        .otherwise(pl.col(current_col))
+        .alias(current_col)
+    )
+
+
+def _fix_sign_from_direction(
+    data: pl.DataFrame,
+    current_col: str,
+    direction: str,
+    rest_tol: float,
+) -> pl.DataFrame:
+    """Sign all non-rest current from a caller-supplied ``direction``.
+
+    The caller has declared that every non-rest current in the measurement
+    is a single operation (the common per-file delivery case), so we sign
+    deterministically rather than guessing from the voltage response:
+
+    - ``"discharge"`` -> non-rest current is made positive,
+    - ``"charge"``    -> non-rest current is made negative.
+
+    Rest rows (``|I| <= rest_tol``) keep their (near-zero) value. The
+    magnitude is taken from ``abs`` so the result is correct regardless of
+    whatever signs the cycler originally recorded.
+    """
+    sign = 1.0 if direction == "discharge" else -1.0
+    magnitude = pl.col(current_col).abs()
+    return data.with_columns(
+        pl.when(magnitude > rest_tol)
+        .then(sign * magnitude)
         .otherwise(pl.col(current_col))
         .alias(current_col)
     )
@@ -1048,11 +1135,13 @@ def _fix_sign_per_step(
         steps_to_negate = set()
         has_discharge = False
         has_charge = False
+        worst_p = 0.0  # track the least-confident step we relied on
         for step_id in non_rest_step_ids:
             mask = step_counts == step_id
-            is_charge, _ = positive_current_is_charge(
+            is_charge, p_value = positive_current_is_charge(
                 t_arr[mask], current_arr[mask], voltage_arr[mask]
             )
+            worst_p = max(worst_p, p_value)
             if is_charge:
                 steps_to_negate.add(step_id)
                 has_charge = True
@@ -1060,13 +1149,20 @@ def _fix_sign_per_step(
                 has_discharge = True
 
         if has_discharge and has_charge:
+            # We guessed direction from the voltage response. Surface low
+            # confidence so silent half-cell sign inversions are noticed.
+            if worst_p >= _VOLTAGE_HEURISTIC_AMBIGUOUS_P:
+                warnings.warn(_VOLTAGE_HEURISTIC_WARNING, stacklevel=2)
             data_current = data.get_column(current_col).to_numpy().copy()
             negate_mask = np.isin(step_counts, list(steps_to_negate))
             data_current[negate_mask] = -data_current[negate_mask]
             return data.with_columns(pl.Series(current_col, data_current))
 
     # Single-direction data or all steps agreed: classify on full series
-    is_charge, _ = positive_current_is_charge(t_arr, current_arr, voltage_arr)
+    is_charge, p_value = positive_current_is_charge(t_arr, current_arr, voltage_arr)
+    # Guessed from voltage response — warn when low-confidence/ambiguous.
+    if p_value >= _VOLTAGE_HEURISTIC_AMBIGUOUS_P:
+        warnings.warn(_VOLTAGE_HEURISTIC_WARNING, stacklevel=2)
     if is_charge:
         return data.with_columns(((-1) * pl.col(current_col)).alias(current_col))
     return data
