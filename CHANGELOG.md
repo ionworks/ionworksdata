@@ -1,0 +1,197 @@
+# Changelog — ionworksdata
+
+All notable changes to this package are documented here. The format
+is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this package follows [Semantic Versioning](https://semver.org/).
+
+For platform-wide release notes (Studio, pipeline, SDK, and more),
+see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
+
+<!-- New release sections are prepended below by the release-packages skill. -->
+
+## [0.13.0] - 2026-08-25
+
+### Added
+- `DataLoader.from_db()` accepts a `time_range` window,
+  `{"start": seconds, "end": seconds}`, carried through into `to_config()`.
+  Bounds are elapsed `Time [s]` values from the first sample, not wall-clock
+  datetimes, so the window stays meaningful for a measurement with no recorded
+  start time and does not drift when that metadata is edited.
+
+  It pins how much of a measurement a pipeline run uses. A measurement that is
+  still being extended grows over time, so re-running an unpinned config
+  silently reads more data than the first run did; a pinned config keeps
+  re-runs comparable. The window is applied when the config is resolved for a
+  run — a local `from_db()` still loads the full current series.
+
+## [0.12.0] - 2026-08-11
+
+### Breaking changes
+- `DataLoader` now rejects an unrecognised option instead of ignoring it. The
+  accepted set is closed, so a misspelt option can no longer silently skip the
+  preprocessing you asked for — it raises at construction. Code that passed a
+  stray or misspelt key and relied on it being dropped must remove it or
+  correct the spelling.
+
+### Added
+- `DataLoader` accepts a `DataLoaderOptions` schema object wherever it accepts
+  an options mapping, so a caller holding one no longer has to unwrap it by
+  hand before merging it with keyword options.
+
+### Changed
+- `interpolate` is documented as taking a float or a list of floats; a numpy
+  array is still accepted and normalised to a list.
+- `first_step` / `last_step` are documented as taking a step index, a query
+  selecting one row of the steps table, or the deprecated cycle/step dict.
+- Added a dependency on `ionworks-schema>=0.18.0`, which now owns the
+  validated definition of the loader's option surface.
+
+## [0.11.6] - 2026-08-03
+
+### Changed
+- Raised the `fastexcel` lower bound to `>=0.20.2`.
+
+## [0.11.5] - 2026-07-29
+
+### Changed
+- Raised the `polars` lower bound to `>=1.43.0`.
+
+## [0.11.4] - 2026-07-28
+
+### Changed
+- `Power [W]` is now computed during raw→parquet processing rather than
+  derived on every read. A new `set_power()` transform mirrors the existing
+  `set_capacity`/`set_energy` pattern, computing
+  `Power [W] = Voltage [V] * Current [A]` and inheriting the current's sign.
+  It is a no-op when `Power [W]` is already present or the source columns are
+  missing, so previously processed measurements are unaffected.
+
+### Fixed
+- The current-sign auto-flip retry path now drops and recomputes `Power [W]`
+  alongside the capacity and energy columns; previously power silently kept
+  the pre-flip sign.
+
+## [0.11.3] - 2026-07-24
+
+### Changed
+- Migrated to numpy 2 and pandas 3.
+- Bumped pybamm to 26.7.1.0 and adapted UCP power-mode simulations and
+  `FunctionForExport` serialization accordingly.
+
+### Fixed
+- Incremented the numpy lower pin.
+
+## [0.11.2] - 2026-07-20
+
+### Changed
+- Raised the ``polars`` dependency floor from ``>=1.33.1`` to
+  ``>=1.42.1`` (#1284).
+
+## [0.11.1] - 2026-07-10
+
+### Fixed
+- BioLogic EIS reader: flip the reported ``-Im(Z)`` into the canonical
+  ``Z_Im [Ohm]`` via an intermediate column instead of negating in place,
+  avoiding a column-name collision during the rename step (#1133).
+
+## [0.11.0] - 2026-07-08
+
+### Breaking changes
+- ``PiecewiseLinearTimeseries`` is now an abstract base class. Build a
+  piecewise-linear timeseries via the new ``piecewise_linear_timeseries()``
+  factory (or the concrete ``PiecewiseLinearTimeseriesCompressed`` /
+  ``PiecewiseLinearTimeseriesLossless`` subclasses); constructing the base
+  class directly now raises ``NotImplementedError`` (#1104).
+
+### Added
+- ``piecewise_linear_timeseries`` factory for constructing a piecewise-linear
+  timeseries, with a lossless variant that reproduces the input current
+  samples exactly instead of compressing them within the tolerances (#1104).
+
+### Fixed
+- Neware BTSDA workbooks now auto-select the ``record`` sheet when the
+  active sheet is not the data sheet (#1113).
+- Maccor exports now read the cycle number from ``"Cycle C"`` rather than
+  ``"Cycle P"`` (#1112).
+
+## [0.10.1] - 2026-06-26
+
+### Fixed
+- Corrected the documented Neware column mappings: ``"Current(A)"`` maps
+  to ``"Current [A]"`` (not ``"Current [mA]"``) (#969).
+
+## [0.10.0] - 2026-06-10
+
+### Added
+- ``CycleAgeing`` objective now supports ``experiment='from data'``,
+  deriving the cycling experiment directly from the measured data
+  instead of requiring it to be specified separately (#834).
+
+### Changed
+- The Arbin ``.res`` reader now bounds each ``mdb-export`` call with a
+  300-second timeout, raising a clear ``RuntimeError`` instead of
+  hanging on a corrupt or locked MDB file (#806).
+
+### Fixed
+- Corrected CC-discharge step mislabeling (#807) and an unsigned
+  mixed-mode current sign error (#810) in step identification (#848).
+
+## [0.9.3] - 2026-06-05
+
+### Changed
+- Canonical CSV column detection now warns when two columns collapse to
+  the same whitespace-stripped key, making it clear that the later column
+  shadows the earlier one (#718).
+
+## [0.9.2] - 2026-06-01
+
+### Changed
+- Switched the ``polars`` dependency from ``polars-lts-cpu`` to the
+  standard ``polars`` distribution (#768).
+
+## [0.9.1] - 2026-05-29
+
+### Changed
+- Relaxed the ``numpy`` dependency bound to allow ``numpy>=2`` (#754).
+
+## [0.9.0] - 2026-05-22
+
+### Added
+- Generic parquet reader (``ionworksdata.read.parquet``) that mirrors
+  the existing CSV ingestion path: format auto-detection picks it
+  up via ``from_path`` / ``from_file`` for ``.parquet`` inputs (#697).
+
+### Changed
+- Capacity and energy are now integrated with a per-step reset that
+  matches the columns reported by the platform, instead of a single
+  cumulative integral. Values inside a step are unchanged; the
+  cumulative totals across resets will differ from previous
+  releases (#687).
+
+### Fixed
+- Coin-cell ingestion now applies the correct current sign and
+  capacity convention; previously some coin-cell sources were
+  imported with flipped charge/discharge labels (#697).
+
+## [0.8.0] - 2026-05-11
+
+### Breaking changes
+- `MeasurementValidationError.errors` is now `list[ValidationIssue]`
+  (a frozen dataclass with stable `CheckName`, `severity`, `message`,
+  and structured `payload`) instead of `list[str]`. Downstream
+  callers that string-matched error messages should switch to
+  `e.has_check(CheckName.X)` (#544).
+
+### Changed
+- `ionworksdata.read` auto-fix now keys off
+  `e.has_check(CheckName.CURRENT_SIGN_CONVENTION)` rather than
+  substring-matching the human-readable message (#544).
+
+## [0.7.0] - 2026-04-30
+
+### Added
+- Arbin CSV/XLSX/RES reader.
+- Maccor reader supports compact short-form column headers.
+
+### Fixed
+- `cycle-metrics` keeps the "Cycle count" column name in its output.
