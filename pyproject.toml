@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ionworksdata"
+version = "0.14.0"
+description = "Data processing for Ionworks software."
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+readme = { file = "README.md", content-type = "text/markdown" }
+dependencies = [
+    "pybamm>=26.8.0.0",
+    "iwutil>=0.4.0",
+    "polars>=1.43.0",
+    "pandas>=2.0",
+    "numpy>=2.0.0",
+    "matplotlib>=3.8",
+    "scipy>=1.14.0",
+    "fastexcel>=0.20.2",
+    "ionworks-api>=0.7.0",
+    "ionworks-schema>=0.18.0",
+    "pytz>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.0",
+    "openpyxl",
+]
+docs = [
+    "pydata-sphinx-theme",
+    "sphinx-design",
+    "myst-nb",
+]
+
+[project.urls]
+Homepage = "https://ionworks.com"
+Documentation = "https://packages.docs.ionworks.com/ionworksdata/"
+Repository = "https://github.com/ionworks/ionworksdata"
+
+[tool.hatch.build.targets.sdist]
+include = ["ionworksdata"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ionworksdata"]
+
+[tool.uv.sources]
+iwutil = { workspace = true }
+ionworks-api = { workspace = true }
+ionworks-schema = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+source = ["ionworksdata"]
