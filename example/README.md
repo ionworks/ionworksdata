@@ -27,8 +27,7 @@ step number, and cycle number.
 
 ## Plot data
 
-Once data has been generated, plot the full RPT data with automatic step
-labeling:
+Once data has been generated, plot the full RPT data coloured by step type:
 
 ```bash
 python example/process_and_plot_data.py
@@ -36,7 +35,7 @@ python example/process_and_plot_data.py
 
 This script demonstrates:
 
-- `iwdata.read.measurement_details` -- read a CSV and automatically label
-  steps as Cycling, GITT, HPPT, or EIS
-- `iwdata.steps.annotate` -- copy step-level labels (e.g. "Label",
-  "Group number") onto the time-series rows for colour-coded plotting
+- `iwdata.read.measurement_details` -- read a CSV into a time series and a
+  per-step summary
+- `iwdata.steps.annotate` -- copy step-level columns (e.g. "Step type") onto
+  the time-series rows for colour-coded plotting

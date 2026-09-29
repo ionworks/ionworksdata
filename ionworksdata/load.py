@@ -199,21 +199,9 @@ def window_rows(frame, time_range):
 
 class DataLoader:
     """
-    Unified data loader for time-series and OCP data.
+    Load time-series data with steps, or plain tabular data such as OCP curves.
 
-    Handles two modes:
-
-    - **With steps**: loads time-series data with step information for
-      simulation, experiment generation, etc.
-    - **Without steps**: loads simple tabular data (e.g. OCP curves with
-      Capacity and Voltage columns).
-
-    Post-load preprocessing is configured via the ``transforms`` dict option.
-
-    The ``data`` and ``steps`` attributes return Polars DataFrames. Use
-    ``loader.data.to_pandas()`` or ``loader.steps.to_pandas()`` for pandas.
-    Constructors and property setters accept both pandas and Polars; inputs
-    are converted to Polars internally.
+    ``data`` and ``steps`` are Polars DataFrames; inputs may be pandas or Polars.
 
     Parameters
     ----------
@@ -240,8 +228,6 @@ class DataLoader:
                 Name of the column in ``time_series`` to use as the capacity
                 axis (copied to ``"Capacity [A.h]"``).
             - transforms : dict with any of:
-                - gitt_to_ocp : bool
-                    See :meth:`transform_gitt_to_ocp` for details.
                 - rest_to_ocp : bool
                     See :meth:`transform_rest_to_ocp` for details.
                 - sort : bool
@@ -256,9 +242,9 @@ class DataLoader:
                     See :meth:`interpolate_data` for details. An ndarray is
                     accepted and normalised to a list.
                 - keep_first_ocp_point : bool
-                    If True, prepend the first point (see :meth:`transform_gitt_to_ocp`
-                    and :meth:`transform_rest_to_ocp`). Default False. Ignored if
-                    gitt_to_ocp and rest_to_ocp are both False.
+                    If True, prepend the first point (see
+                    :meth:`transform_rest_to_ocp`). Default False. Ignored if
+                    rest_to_ocp is False.
     """
 
     #: The ``"Cycle count"`` behind each cycle of the last experiment
@@ -496,9 +482,8 @@ class DataLoader:
 
         transforms = dict(options.get("transforms") or {})
         # Backward compat: top-level transform keys migrate into transforms
-        # (so from_db(options={"gitt_to_ocp": True, "sort": True}) applies them)
+        # (so from_db(options={"rest_to_ocp": True, "sort": True}) applies them)
         for key in (
-            "gitt_to_ocp",
             "rest_to_ocp",
             "sort",
             "remove_duplicates",
@@ -509,10 +494,6 @@ class DataLoader:
         ):
             if key in options and key not in transforms:
                 transforms[key] = options[key]
-        if transforms.get("gitt_to_ocp") and transforms.get("rest_to_ocp"):
-            raise ValueError(
-                "gitt_to_ocp and rest_to_ocp are mutually exclusive; set only one"
-            )
 
         first_step = options.get("first_step")
         last_step = options.get("last_step")
@@ -872,8 +853,6 @@ class DataLoader:
 
     def _apply_transforms(self):
         transforms = self._transforms
-        if transforms.get("gitt_to_ocp"):
-            self.transform_gitt_to_ocp()
         if transforms.get("rest_to_ocp"):
             self.transform_rest_to_ocp()
         if transforms.get("sort"):
@@ -912,98 +891,12 @@ class DataLoader:
         self._data_pl = iw_steps.annotate(self._data_pl, steps_slice, ["Step count"])
         return self._data_pl
 
-    def _transform_rest_steps_to_ocp(
-        self,
-        rest_steps_pl: pl.DataFrame,
-        *,
-        keep_first_ocp_point: bool = False,
-        first_row_idx: int | None = None,
-    ):
-        """Extract OCP from the given rest steps (shared by gitt_to_ocp and rest_to_ocp).
-
-        Uses transform.get_cumulative_net_capacity for the full step list, then
-        reads capacity and voltage at the end of each step in rest_steps_pl.
-        If keep_first_ocp_point is True and first_row_idx is set, prepends that row
-        as an extra OCP point.
-        """
-        if self._steps_pl is None:
-            raise ValueError("steps data is required")
-        if rest_steps_pl.height == 0:
-            raise ValueError("rest_steps_pl must not be empty")
-        if "Step count" in rest_steps_pl.columns:
-            rest_steps_pl = rest_steps_pl.sort("Step count")
-
-        cumulative = iw_transform.get_cumulative_net_capacity(
-            self._data_pl, options=None
-        )
-        data_pl = self._data_pl
-
-        ocp_points = []
-        if keep_first_ocp_point and first_row_idx is not None:
-            row0 = data_pl.row(first_row_idx, named=True)
-            ocp_points.append(
-                {
-                    "Capacity [A.h]": cumulative[first_row_idx],
-                    "Voltage [V]": row0["Voltage [V]"],
-                }
-            )
-        for step_row in rest_steps_pl.iter_rows(named=True):
-            end_idx = int(step_row["End index"]) - self._start_idx
-            row = data_pl.row(end_idx, named=True)
-            ocp_points.append(
-                {
-                    "Capacity [A.h]": cumulative[end_idx],
-                    "Voltage [V]": row["Voltage [V]"],
-                }
-            )
-
-        ocp_df = pl.DataFrame(ocp_points).sort("Capacity [A.h]")
-        first_cap = ocp_df["Capacity [A.h]"][0]
-        ocp_df = ocp_df.with_columns(
-            (pl.col("Capacity [A.h]") - first_cap).alias("Capacity [A.h]")
-        )
-        self._data_pl = ocp_df
-
-        self._steps_pl = None
-
-    def transform_gitt_to_ocp(self):
-        """Extract OCP from GITT rest steps: take the last data point of each rest.
-
-        Filters steps to those with ``Label == "GITT"`` and ``Step type == "Rest"``,
-        computes cumulative net capacity (discharge/charge reset per step), then
-        builds one OCP point (capacity, voltage) at the end of each such rest.
-        If ``transforms["keep_first_ocp_point"]`` is True, prepends the first row
-        of the first GITT step as an extra OCP point. Replaces :attr:`data`
-        with the OCP table and clears :attr:`steps`.
-        """
-        if self._steps_pl is None:
-            raise ValueError("gitt_to_ocp requires steps data")
-
-        gitt_rest = self._steps_pl.filter(
-            (pl.col("Label") == "GITT") & (pl.col("Step type") == "Rest")
-        )
-        if gitt_rest.height == 0:
-            raise ValueError("No GITT rest steps found in data")
-
-        keep_first = self._transforms.get("keep_first_ocp_point", False)
-        first_row_idx = (
-            int(self._steps_pl.filter(pl.col("Label") == "GITT")["Start index"][0])
-            - self._start_idx
-            if keep_first
-            else None
-        )
-        self._transform_rest_steps_to_ocp(
-            gitt_rest,
-            keep_first_ocp_point=keep_first,
-            first_row_idx=first_row_idx,
-        )
-
     def transform_rest_to_ocp(self):
-        """Extract OCP from all rest steps (no GITT label check).
+        """Extract OCP from rest steps: take the last data point of each rest.
 
-        Filters steps to those with ``Step type == "Rest"`` only. Useful when
-        step type is available but GITT labels are missing or unreliable. Same
-        cumulative-capacity and OCP-building logic as :meth:`transform_gitt_to_ocp`.
+        Filters steps to those with ``Step type == "Rest"``, computes cumulative
+        net capacity (discharge/charge reset per step), then builds one OCP point
+        (capacity, voltage) at the end of each rest.
         If ``transforms["keep_first_ocp_point"]`` is True, prepends the first row
         of the time series as an extra OCP point. Replaces :attr:`data` with the
         OCP table and clears :attr:`steps`.
@@ -1017,13 +910,27 @@ class DataLoader:
         rest_steps = self._steps_pl.filter(pl.col("Step type") == "Rest")
         if rest_steps.height == 0:
             raise ValueError("No rest steps found in data")
+        if "Step count" in rest_steps.columns:
+            rest_steps = rest_steps.sort("Step count")
 
-        keep_first = self._transforms.get("keep_first_ocp_point", False)
-        self._transform_rest_steps_to_ocp(
-            rest_steps,
-            keep_first_ocp_point=keep_first,
-            first_row_idx=0 if keep_first else None,
-        )
+        data_pl = self._data_pl
+        cumulative = iw_transform.get_cumulative_net_capacity(data_pl, options=None)
+        row_indices = [
+            int(end) - self._start_idx for end in rest_steps["End index"].to_list()
+        ]
+        if self._transforms.get("keep_first_ocp_point", False):
+            row_indices.insert(0, 0)
+
+        voltage = data_pl["Voltage [V]"]
+        ocp_df = pl.DataFrame(
+            {
+                "Capacity [A.h]": [cumulative[i] for i in row_indices],
+                "Voltage [V]": [voltage[i] for i in row_indices],
+            }
+        ).sort("Capacity [A.h]")
+        first_cap = ocp_df["Capacity [A.h]"][0]
+        self._data_pl = ocp_df.with_columns(pl.col("Capacity [A.h]") - first_cap)
+        self._steps_pl = None
 
     @staticmethod
     def remove_duplicate_ocp(

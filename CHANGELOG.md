@@ -9,6 +9,24 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [0.19.0] - 2026-09-29
+
+### Breaking changes
+- The step-labeling API is removed: `steps.label_cycling`, `steps.label_pulse`,
+  `steps.label_eis` and `steps.validate` no longer exist, and `steps.summarize` /
+  `steps.identify` no longer emit `Label` or `Group number` columns. Use the
+  `Step type` column to tell steps apart.
+- `read.measurement_details` drops its `labels` argument and no longer sets
+  `step_labels_validated`. `keep_only_required_columns` and `data_type` each move
+  up one position, so pass them by keyword.
+- The `DataLoader` `gitt_to_ocp` transform is removed. It selected rests by the
+  `GITT` step label, which raw uploads never carry. Use `rest_to_ocp`, which
+  reduces every rest step to an OCP curve.
+
+### Changed
+- Raised the `pybamm` lower bound to `>=26.9.0.0` and the `matplotlib` lower bound
+  to `>=3.11.2`.
+
 ## [0.18.0] - 2026-09-24
 
 ### Added

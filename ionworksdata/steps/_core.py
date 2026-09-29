@@ -4,6 +4,8 @@ Core step analysis functions for battery cycling data.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -11,7 +13,11 @@ import polars as pl
 import ionworksdata as iwdata
 
 
-def summarize(data: pd.DataFrame | pl.DataFrame) -> pl.DataFrame:
+def summarize(
+    data: pd.DataFrame | pl.DataFrame,
+    *,
+    cell_spec: Any = None,
+) -> pl.DataFrame:
     """
     Returns a DataFrame with information about each step in the data.
 
@@ -20,6 +26,11 @@ def summarize(data: pd.DataFrame | pl.DataFrame) -> pl.DataFrame:
     data : pd.DataFrame | pl.DataFrame
         The data to get the step types for. Must contain "Step count" column.
         If "Cycle from cycler" is present, it will be used to calculate cycle count.
+    cell_spec : dict or object, optional
+        The cell specification (e.g. the API client's ``CellSpecification``).
+        Preferred: with its ``ratings.capacity``, rest and constant-current
+        thresholds are C/1000 and C/200 instead of 1 % of the largest absolute
+        current in the data, which a single current spike can distort.
 
     Returns
     -------
@@ -31,7 +42,7 @@ def summarize(data: pd.DataFrame | pl.DataFrame) -> pl.DataFrame:
         (if energy columns are present), and a "Cycle from cycler" column (only if
         provided in the input data).
     """
-    steps_list = identify(data)
+    steps_list = identify(data, cell_spec=cell_spec)
     steps_pl = pl.DataFrame(steps_list)
     steps_pl = set_cycle_capacity(steps_pl)
     steps_pl = set_cycle_energy(steps_pl)
@@ -316,13 +327,50 @@ def _build_agg_exprs(
     return agg_exprs
 
 
-def _infer_step_type_expr() -> pl.Expr:
-    """Build a ``pl.Expr`` that classifies each step's type."""
+_AH_PER_UNIT = {"A.h": 1.0, "mA.h": 1e-3, "uA.h": 1e-6}
+
+
+def _spec_capacity(cell_spec: Any) -> float | None:
+    """A cell spec's rated capacity in A.h, or None without a spec."""
+    if cell_spec is None:
+        return None
+
+    def get(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    rated = get(get(cell_spec, "ratings") or {}, "capacity") or {}
+    value, unit = get(rated, "value"), get(rated, "unit")
+    unit = (
+        str(unit)
+        .replace("μ", "u")
+        .replace("µ", "u")
+        .replace("*", ".")
+        .replace(" ", ".")
+    )
+    unit = unit[:-1] + ".h" if unit.endswith("Ah") else unit
+    if not isinstance(value, int | float) or unit not in _AH_PER_UNIT:
+        raise ValueError(f"Unusable cell_spec ratings.capacity: {rated!r}")
+    return value * _AH_PER_UNIT[unit]
+
+
+def _infer_step_type_expr(scale: float | None, capacity: float | None) -> pl.Expr:
+    """Build a ``pl.Expr`` that classifies each step's type.
+
+    The absolute rest and CC-std tolerances (1 mA, 10 mA) exceed every current
+    in coin-cell data, so each is capped at C/1000 and C/200 of ``capacity``
+    [A.h], or else at 1 % of ``scale``, the largest absolute current in the data.
+    """
     current_tol = iwdata.settings.get_current_std_tol()
     voltage_tol = iwdata.settings.get_voltage_std_tol()
     power_tol = iwdata.settings.get_power_std_tol()
     rest_tol = iwdata.settings.get_rest_tol()
     eis_tol = iwdata.settings.get_eis_tol()
+    if capacity:
+        rest_tol = min(rest_tol, capacity / 1000)
+        current_tol = min(current_tol, capacity / 200)
+    elif scale:
+        rest_tol = min(rest_tol, scale / 100)
+        current_tol = min(current_tol, scale / 100)
     return (
         pl.when(pl.col("Mean frequency [Hz]") > eis_tol)
         .then(pl.lit("EIS"))
@@ -351,7 +399,9 @@ def _infer_step_type_expr() -> pl.Expr:
     )
 
 
-def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
+def identify(
+    time_series: pd.DataFrame | pl.DataFrame, *, cell_spec: Any = None
+) -> list[dict]:
     """
     Identify individual steps in battery cycling data.
 
@@ -365,6 +415,8 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
     time_series : pd.DataFrame | pl.DataFrame
         Battery cycling data with columns including "Step count", "Time [s]",
         'Voltage [V]', 'Current [A]', etc.
+    cell_spec : dict or object, optional
+        The cell specification; see :func:`summarize`.
 
     Returns
     -------
@@ -397,14 +449,8 @@ def identify(time_series: pd.DataFrame | pl.DataFrame) -> list[dict]:
     else:
         agg = agg.with_columns(pl.lit(None).cast(pl.Float64).alias("Duration [s]"))
 
-    # Step type + placeholder columns
-    agg = agg.with_columns(_infer_step_type_expr())
-    agg = agg.with_columns(
-        [
-            pl.lit("").alias("Label"),
-            pl.lit(float("nan")).alias("Group number"),
-        ]
-    )
+    scale = time_series_pl["Current [A]"].abs().max() if has_current else None
+    agg = agg.with_columns(_infer_step_type_expr(scale, _spec_capacity(cell_spec)))
 
     return agg.drop(["__step_group"]).to_dicts()
 
@@ -595,7 +641,7 @@ def annotate(
 
     Each time-series row is assigned the step's value for each requested column,
     based on step "Start index" and "End index" (inclusive). Use this to attach
-    step-level info (e.g. "Step count", "Label", "Step type") to every row for
+    step-level info (e.g. "Step count", "Step type") to every row for
     downstream transforms or filtering.
 
     Parameters

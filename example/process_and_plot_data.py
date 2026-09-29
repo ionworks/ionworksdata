@@ -3,9 +3,8 @@ Plot a full RPT (Reference Performance Test) dataset using ionworksdata.
 
 This example demonstrates how to:
 1. Read a CSV file using ionworksdata's measurement_details reader
-2. Automatically label steps as cycling, GITT, or HPPT
-3. Annotate the time series with step labels
-4. Visualise raw and labeled data
+2. Annotate the time series with each step's type
+3. Visualise raw data and data coloured by step type
 """
 
 import pathlib
@@ -21,35 +20,22 @@ this_dir = pathlib.Path(__file__).parent
 # ---------------------------------------------------------------------------
 
 
-def _contiguous_blocks(values):
-    """Split a sorted sequence of integers into lists of consecutive runs."""
-    blocks = []
-    for v in values:
-        if blocks and v == blocks[-1][-1] + 1:
-            blocks[-1].append(v)
-        else:
-            blocks.append([v])
-    return blocks
-
-
-LABEL_COLORS = {"": "black", "Cycling": "blue", "HPPT": "red", "GITT": "green"}
-
-
-def plot_variables(data, vars_to_plot, steps=None, title=None, split_by_label=False):
+def plot_variables(data, vars_to_plot, title=None, split_by_type=False):
     n = len(vars_to_plot)
     fig, axes = plt.subplots(n, 1, figsize=(6, 2 * n), sharex=True)
     axes = np.atleast_1d(axes)
 
-    if split_by_label:
-        if steps is None:
-            raise ValueError("steps must be provided if split_by_label is True")
-        for label, color in LABEL_COLORS.items():
-            axes[0].plot([], [], color=color, label=label)
-            step_nums = steps.loc[steps["Label"] == label, "Step count"]
-            for block in _contiguous_blocks(step_nums):
-                block_data = data.loc[data["Step count"].isin(block)]
-                for ax, v in zip(axes, vars_to_plot, strict=False):
-                    ax.plot(block_data["Time [s]"], block_data[v], color=color)
+    if split_by_type:
+        step_types = sorted(data["Step type"].unique())
+        cmap = plt.get_cmap("tab10")
+        colors = {t: cmap(i % 10) for i, t in enumerate(step_types)}
+        for step_type, color in colors.items():
+            axes[0].plot([], [], color=color, label=step_type)
+        # One line per step, so steps of the same type are not joined across gaps.
+        for _, step_data in data.groupby("Step count"):
+            color = colors[step_data["Step type"].iloc[0]]
+            for ax, v in zip(axes, vars_to_plot, strict=False):
+                ax.plot(step_data["Time [s]"], step_data[v], color=color)
         axes[0].legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0)
     else:
         for ax, v in zip(axes, vars_to_plot, strict=False):
@@ -68,65 +54,34 @@ def plot_variables(data, vars_to_plot, steps=None, title=None, split_by_label=Fa
     return fig, axes
 
 
-# ---------------------------------------------------------------------------
-# 1. Read the CSV and label steps with measurement_details
-# ---------------------------------------------------------------------------
-# measurement_details() is a convenience function that:
-#   - reads the raw CSV via the built-in CSV reader
-#   - detects step boundaries and computes a cumulative "Step count"
-#   - summarises each step (duration, capacity, type, etc.)
-#   - labels steps as Cycling, GITT, HPPT, or EIS using the nominal
-#     cell capacity
-#
-# extra_column_mappings tells the CSV reader which raw columns map to
-# the standard "Step from cycler" and "Cycle from cycler" names so that
-# step counting works correctly.
-
 data_path = this_dir / "data" / "full_rpt" / "data.csv"
 result = iwdata.read.measurement_details(
     data_path,
     measurement={},
     reader="csv",
+    # Names the raw step/cycle columns so step counting works.
     extra_column_mappings={
         "Step": "Step from cycler",
         "Cycle": "Cycle from cycler",
     },
-    options={"cell_metadata": {"Nominal cell capacity [A.h]": 5}},
 )
 
-# measurement_details returns a dict with three keys:
-#   "time_series" - polars DataFrame with standardised columns
-#   "steps"       - polars DataFrame with one row per step, including labels
-#   "measurement" - dict of metadata (cycler name, start time, etc.)
 time_series = result["time_series"].to_pandas()
 steps = result["steps"].to_pandas()
 
-# ---------------------------------------------------------------------------
-# 2. Plot the raw (unlabeled) data
-# ---------------------------------------------------------------------------
 fig, axes = plot_variables(
     time_series,
     ["Current [A]", "Voltage [V]", "Temperature [degC]", "Step count"],
     title="Full RPT data",
 )
 
-# ---------------------------------------------------------------------------
-# 3. Annotate time series with step labels and group numbers
-# ---------------------------------------------------------------------------
-# annotate() copies columns from the steps table onto the time series so
-# that each row knows which label and group it belongs to.  This is useful
-# for colour-coding plots by experiment type.
-time_series = iwdata.steps.annotate(time_series, steps, ["Label", "Group number"])
+time_series = iwdata.steps.annotate(time_series, steps, ["Step type"]).to_pandas()
 
-# ---------------------------------------------------------------------------
-# 4. Plot the labeled data, colour-coded by experiment type
-# ---------------------------------------------------------------------------
 fig, axes = plot_variables(
     time_series,
-    ["Current [A]", "Voltage [V]", "Step count", "Group number"],
-    steps=steps,
-    title="Labeled RPT data",
-    split_by_label=True,
+    ["Current [A]", "Voltage [V]", "Step count"],
+    title="RPT data by step type",
+    split_by_type=True,
 )
 
 plt.show()

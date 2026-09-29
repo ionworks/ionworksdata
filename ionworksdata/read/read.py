@@ -10,7 +10,6 @@ from ionworks.validators import (
     validate_measurement_data,
 )
 import iwutil
-import pandas as pd
 import polars as pl
 
 import ionworksdata as iwdata
@@ -450,16 +449,14 @@ def time_series_and_steps(
     extra_constant_columns: dict[str, float] | None = None,
     options: dict[str, Any] | None = None,
     save_dir: str | Path | None = None,
+    *,
+    cell_spec: Any = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
-    Read the time series data from cycler file into a dataframe using :func:`ionworksdata.read.time_series`
-    and then label the steps. The steps dataframe is created using :func:`ionworksdata.steps.summarize`.
-    The steps output always includes a "Cycle count" column (defaults to 0 if no cycle information is available)
-    and a "Cycle from cycler" column (only if provided in the input data).
+    Read a cycler file with :func:`time_series` and summarize its steps.
 
-    When validation is enabled, runs the same validation as the Ionworks API so that
-    data which passes here will pass API validation on upload. Control via the
-    ``options`` dict: ``validate`` (default True) and ``validate_strict`` (default False).
+    Validation mirrors the Ionworks API's, so data that passes here passes on
+    upload; ``options`` keys ``validate`` / ``validate_strict`` control it.
 
     Parameters
     ----------
@@ -482,6 +479,9 @@ def time_series_and_steps(
     save_dir : str or Path, optional
         The directory to save the time series and steps data to. If not provided, the data will
         not be saved.
+    cell_spec : dict or object, optional
+        The cell specification, used to type steps against its rated capacity.
+        Preferred when known; see :func:`ionworksdata.steps.summarize`.
 
     Returns
     -------
@@ -515,14 +515,13 @@ def time_series_and_steps(
         save_dir,
     )
 
-    # Label the steps using "Step count" as the filter column
     if "Step count" not in data.columns:
         raise ValueError(
             "No 'Step count' column found in data. Cannot create steps dataframe. "
             "This column is automatically added by time_series()."
         )
 
-    steps = iwdata.steps.summarize(data)
+    steps = iwdata.steps.summarize(data, cell_spec=cell_spec)
     if not isinstance(steps, pl.DataFrame):
         steps = pl.from_pandas(steps)
 
@@ -570,7 +569,7 @@ def time_series_and_steps(
                 # otherwise derives it fresh from the now-corrected current.
                 data = iwdata.transform.set_power(data)
                 # Regenerate steps with fixed data
-                steps = iwdata.steps.summarize(data)
+                steps = iwdata.steps.summarize(data, cell_spec=cell_spec)
                 if not isinstance(steps, pl.DataFrame):
                     steps = pl.from_pandas(steps)
                 # Re-validate
@@ -843,7 +842,6 @@ def _read_ocp_measurement(
         validate_measurement_data(data, strict=validate_strict, data_type="ocp")
 
     measurement["data_type"] = "ocp"
-    measurement["step_labels_validated"] = False
 
     return {
         "measurement": measurement,
@@ -878,6 +876,17 @@ def _merge_header_metadata(measurement: dict[str, Any], header: dict[str, Any]) 
             measurement.setdefault(key, value)
 
 
+def _spec_from_cell_metadata(options: dict[str, Any] | None) -> dict | None:
+    """A minimal cell spec from ``options["cell_metadata"]``'s nominal capacity."""
+    cell_metadata = (options or {}).get("cell_metadata")
+    if not isinstance(cell_metadata, dict):
+        return None
+    capacity = cell_metadata.get("Nominal cell capacity [A.h]")
+    if capacity is None:
+        return None
+    return {"ratings": {"capacity": {"value": capacity, "unit": "A.h"}}}
+
+
 def measurement_details(
     filename: str | Path,
     measurement: dict[str, str],
@@ -885,7 +894,6 @@ def measurement_details(
     extra_column_mappings: dict[str, str] | None = None,
     extra_constant_columns: dict[str, float] | None = None,
     options: dict[str, Any] | None = None,
-    labels: list[dict[str, Any]] | None = None,
     keep_only_required_columns: bool = True,
     data_type: str | None = None,
 ) -> dict[str, Any]:
@@ -916,13 +924,6 @@ def measurement_details(
     options : dict[str, str] | None, optional
         A dictionary of options to pass to the reader. See the reader's documentation
         for the available options. Default is None.
-    labels : list[dict[str, Any]] | None, optional
-        A list of dictionaries containing the labels to add to the steps table.
-        The keys are the label names and the values are the label options. If not provided,
-        the default labels are added, which are cycling, pulse (charge and discharge), and EIS.
-        If None, then the options dictionary must contain a "cell_metadata" key, which has a
-        "Nominal cell capacity [A.h]" key, which is used to add the cycling and pulse labels.
-        Default is None.
     keep_only_required_columns : bool, optional
         If True, only the required columns are kept in the time series. Default is True.
         See :func:`ionworksdata.read.keep_required_columns` for the required columns.
@@ -999,6 +1000,7 @@ def measurement_details(
         extra_column_mappings,
         extra_constant_columns,
         options,
+        cell_spec=_spec_from_cell_metadata(options),
     )
     # Keep only the required columns in the time series
     if keep_only_required_columns:
@@ -1009,57 +1011,6 @@ def measurement_details(
             extra_columns.extend(extra_constant_columns.keys())
         data = keep_required_columns(data, extra_columns=extra_columns)
 
-    # Add labels to the steps table
-    options = options or {}
-    cell_metadata_raw: dict | str | None = options.get("cell_metadata", {})
-    if (
-        not isinstance(cell_metadata_raw, dict)
-        or "Nominal cell capacity [A.h]" not in cell_metadata_raw
-    ):
-        logger.warning(
-            "No 'Nominal cell capacity [A.h]' found in cell_metadata dictionary. "
-            "Unable to add labels to the steps table.",
-        )
-        step_labels_validated = False
-    else:
-        nominal_capacity = cell_metadata_raw["Nominal cell capacity [A.h]"]
-        cell_metadata: dict = {"Nominal cell capacity [A.h]": nominal_capacity}
-        default_labels = [
-            {"Cycling": {"cell_metadata": cell_metadata}},
-            {
-                "Pulse": {
-                    "cell_metadata": cell_metadata,
-                    "current direction": "discharge",
-                }
-            },
-            {"Pulse": {"cell_metadata": cell_metadata, "current direction": "charge"}},
-            {"EIS": {}},
-        ]
-        labels_to_apply: list[dict[str, Any]] = labels or default_labels
-        for label in labels_to_apply:
-            for label_name, label_options in label.items():
-                label_name_lower = label_name.lower()
-                if label_name_lower == "cycling":
-                    steps = iwdata.steps.label_cycling(steps, options=label_options)
-                elif label_name_lower == "pulse":
-                    steps = iwdata.steps.label_pulse(steps, options=label_options)
-                elif label_name_lower == "eis":
-                    steps = iwdata.steps.label_eis(steps, options=label_options)
-                else:
-                    raise ValueError(f"Unknown label type: {label_name}")
-        # Check that the steps labels are valid
-        validations: list[bool] = []
-        for label_name in steps["Label"].unique().to_list():
-            if label_name is None or (
-                isinstance(label_name, float) and pd.isna(label_name)
-            ):
-                continue
-            this_valid = iwdata.steps.validate(steps, label_name)
-            validations.append(this_valid)
-        step_labels_validated = all(validations) if validations else False
-
-    # Populate the measurement dictionary
-    measurement["step_labels_validated"] = step_labels_validated
     # Kept flat for back compat, though the API drops it; test_setup below is
     # where it reaches the platform.
     measurement["cycler"] = reader
