@@ -12,7 +12,7 @@ import polars as pl
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks, savgol_filter
 
-from . import steps as iw_steps, transform as iw_transform
+from . import settings as iw_settings, steps as iw_steps, transform as iw_transform
 from .logger import _import_pybamm, logger
 
 if TYPE_CHECKING:
@@ -251,6 +251,9 @@ class DataLoader:
     #: :meth:`generate_experiment` produced, which numbers its cycles by
     #: position. None before one is generated, and without that column.
     experiment_cycle_counts: list | None = None
+    #: Per cycle, the ``"Start index"`` of the row behind each step, since a
+    #: CC-CV split or a skipped zero-duration step shifts positions.
+    experiment_step_sources: list[list[int]] | None = None
 
     def __init__(
         self,
@@ -1400,6 +1403,7 @@ class DataLoader:
         use_cv: bool = False,
         termination: str = "duration",
         period: str | float | None = None,
+        split_cc_cv: bool = True,
     ) -> pybamm.Experiment:
         """Generate a PyBaMM experiment from the loaded step information.
 
@@ -1435,6 +1439,14 @@ class DataLoader:
             :class:`pybamm.Experiment` takes it. ``"from data"`` gives each
             step the measurement's own mean sample interval. Default None,
             which leaves the output grid to PyBaMM.
+        split_cc_cv : bool, optional
+            Emit a step no type fits that ran constant current and then held its
+            voltage, as cyclers often log a CC-CV charge, as a constant-current
+            step followed by a constant-voltage step, rather than as a current
+            interpolant. Default True. A split step becomes two experiment
+            steps, so every later step of its cycle sits one position further
+            along than its row in the steps table; code that reads the
+            experiment's steps by steps-table position has to allow for it.
 
         Returns
         -------
@@ -1443,7 +1455,9 @@ class DataLoader:
             table. A table without that column has no cycle structure to
             recover and becomes a single cycle. The ``"Cycle count"`` behind
             each cycle is left in :attr:`experiment_cycle_counts`, since the
-            experiment itself numbers its cycles by position.
+            experiment itself numbers its cycles by position, and the
+            steps-table row behind each step in
+            :attr:`experiment_step_sources`.
         """
         if termination not in ("duration", "events"):
             raise ValueError(
@@ -1456,14 +1470,21 @@ class DataLoader:
         # Cleared up front so a raise partway cannot leave the counts of an
         # earlier call standing against an experiment that was never returned.
         self.experiment_cycle_counts = None
+        self.experiment_step_sources = None
         # Not "Step count", which a cycler renumbering steps within each cycle
         # makes non-monotonic.
         steps_pl = self._steps_pl.sort("Start index")
         cycles: list[list] = []
         cycle_counts: list = []
+        step_sources: list[list[int]] = []
         cycle_key = None
         unclassified: list[str] = []
-        for step_row in steps_pl.iter_rows(named=True):
+        step_rows = steps_pl.iter_rows(named=True)
+        if split_cc_cv:
+            step_rows = self._with_cc_cv_split(step_rows)
+        else:
+            step_rows = ((int(row["Start index"]), row) for row in step_rows)
+        for source, step_row in step_rows:
             duration = step_row["Duration [s]"]
             step_type = step_row["Step type"]
             if duration is not None and duration <= np.nextafter(0, 1):
@@ -1510,9 +1531,11 @@ class DataLoader:
             key = step_row.get("Cycle count")
             if cycles and key == cycle_key:
                 cycles[-1].append(step)
+                step_sources[-1].append(source)
             else:
                 cycle_key = key
                 cycles.append([step])
+                step_sources.append([source])
                 cycle_counts.append(key)
         if unclassified:
             # Naming the steps makes each message unique, so Python's warning
@@ -1530,6 +1553,7 @@ class DataLoader:
         self.experiment_cycle_counts = (
             cycle_counts if "Cycle count" in steps_pl.columns else None
         )
+        self.experiment_step_sources = step_sources
         return pybamm.Experiment([tuple(cycle) for cycle in cycles])
 
     def generate_interpolant(self) -> pybamm.Interpolant:
@@ -1639,6 +1663,102 @@ class DataLoader:
             "resampled since the steps were summarised; re-summarise them from "
             "the series you are using."
         )
+
+    def _with_cc_cv_split(self, step_rows):
+        """Yield each step, with an unclassified CC-then-CV step as its two legs.
+
+        Parameters
+        ----------
+        step_rows : Iterable[dict]
+            Rows of the steps table, as produced by
+            :func:`ionworksdata.steps.summarize`.
+
+        Yields
+        ------
+        tuple of (int, dict)
+            The ``"Start index"`` of the steps-table row, and that row or, in
+            place of a split step, its constant-current leg followed by its
+            constant-voltage leg, each paired with the original's index.
+        """
+        for step_row in step_rows:
+            legs = None
+            if step_row["Step type"] == "Unknown step type":
+                legs = self._cc_cv_legs(step_row)
+            source = int(step_row["Start index"])
+            for leg in legs or [step_row]:
+                yield source, leg
+
+    def _cc_cv_legs(self, step_row: dict) -> list[dict] | None:
+        """The CC and CV legs of a step logged as one, or None if it is not CC-CV.
+
+        Each leg must pass the tolerances :func:`ionworksdata.steps.summarize`
+        classifies steps by, so a pulse train or a multi-rate charge stays whole.
+
+        Parameters
+        ----------
+        step_row : dict
+            One row of the steps table, as produced by
+            :func:`ionworksdata.steps.summarize`.
+
+        Returns
+        -------
+        list of dict or None
+            The constant-current and constant-voltage legs as step rows, or
+            None when the step is not a CC-CV step.
+        """
+        if "Voltage [V]" not in self.data.columns:
+            return None
+        time, current = self._get_times_and_currents(step_row)
+        start_idx = int(step_row["Start index"]) - self._start_idx
+        voltage = self.data["Voltage [V]"].slice(start_idx, len(time)).to_numpy()
+        if len(time) < 4 or abs(current.mean()) < iw_settings.get_rest_tol():
+            return None
+        charge = current.mean() < 0
+        hold = voltage.max() if charge else voltage.min()
+        voltage_tol = iw_settings.get_voltage_std_tol()
+        k = int(np.argmax(np.abs(voltage - hold) < voltage_tol))
+        # One sample is trimmed from the CC leg, as in step classification, and
+        # each leg keeps at least two.
+        if k < 3 or k > len(time) - 2:
+            return None
+        cc_current = current[1:k]
+        tapered = abs(current[-1]) < abs(cc_current.mean()) - (
+            iw_settings.get_current_std_tol()
+        )
+        if not (
+            cc_current.std() < iw_settings.get_current_std_tol()
+            and voltage[k:].std() < voltage_tol
+            and tapered
+        ):
+            return None
+        direction = "charge" if charge else "discharge"
+        first = int(step_row["Start index"])
+        # The cycler switched to the hold on reaching it, so the CC leg ends at
+        # the hold voltage rather than at its last logged sample.
+        hold_voltage = float(voltage[k:].mean())
+        # Capacity, energy and mean power still describe the whole step: nothing
+        # reads them for a CC or CV step, so they are not recomputed per leg.
+        cc_leg = {
+            **step_row,
+            "Step type": f"Constant current {direction}",
+            "End index": first + k - 1,
+            "End time [s]": float(time[k - 1]),
+            "Duration [s]": float(time[k - 1] - time[0]),
+            "Mean current [A]": float(cc_current.mean()),
+            "Mean voltage [V]": float(voltage[:k].mean()),
+            "End voltage [V]": hold_voltage,
+        }
+        cv_leg = {
+            **step_row,
+            "Step type": f"Constant voltage {direction}",
+            "Start index": first + k,
+            "Start time [s]": float(time[k]),
+            "Duration [s]": float(time[-1] - time[k]),
+            "Mean current [A]": float(current[k:].mean()),
+            "Mean voltage [V]": hold_voltage,
+            "Start voltage [V]": float(voltage[k]),
+        }
+        return [cc_leg, cv_leg]
 
     def _step_event(self, step_row: dict, use_cv: bool) -> str | None:
         """Where a step ended, in the variable it was controlling.

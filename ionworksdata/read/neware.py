@@ -133,6 +133,31 @@ class Neware(BaseReader):
         "Voltage (V)",
         "Voltage(V)",
         "Temperature 1 (degC)",
+        # BTSDA flat CSV capacity/energy/power columns. A long opening rest
+        # writes these as literal ``0`` for longer than the inference window.
+        "Capacity(Ah)",
+        "Capacity (Ah)",
+        "Spec. Cap.(mAh/g)",
+        "Chg. Cap.(Ah)",
+        "Chg. Cap. (Ah)",
+        "Chg. Spec. Cap.(mAh/g)",
+        "DChg. Cap.(Ah)",
+        "DChg. Cap. (Ah)",
+        "DChg. Spec. Cap.(mAh/g)",
+        "Energy(Wh)",
+        "Energy (Wh)",
+        "Spec. Energy(mWh/g)",
+        "Chg. Energy(Wh)",
+        "Chg. Energy (Wh)",
+        "Chg. Spec. Energy(mWh/g)",
+        "DChg. Energy(Wh)",
+        "DChg. Energy (Wh)",
+        "DChg. Spec. Energy(mWh/g)",
+        "Power(W)",
+        "Power (W)",
+        "dQ/dV(mAh/V)",
+        "dQm/dV(mAh/V.g)",
+        "Contact resistance(mO)",
     ]
 
     @staticmethod
@@ -364,8 +389,10 @@ class Neware(BaseReader):
             "Temperature 1 (degC)": "Temperature [degC]",
             "Step ID": "Step from cycler",
             "Step": "Step from cycler",
+            "Step Index": "Step from cycler",
             "Cycle ID": "Cycle from cycler",
             "Cycle": "Cycle from cycler",
+            "Cycle Index": "Cycle from cycler",
             "Status": "Status",
             "DateTime": "Timestamp",
             "Absolute Time": "Timestamp",
@@ -430,19 +457,7 @@ class Neware(BaseReader):
         extra_column_mappings: dict[str, str] | None = None,
         options: dict[str, str] | None = None,
     ) -> pl.DataFrame:
-        """
-        Read and process data from a Neware file (CSV or Excel). The following column mappings are applied by default:
-
-            - "Current (mA)", "Cur(mA)" -> "Current [mA]"
-            - "Current (A)", "Current(A)" -> "Current [A]"
-            - "Voltage (V)", "Voltage(V)" -> "Voltage [V]"
-            - "Temperature 1 (degC)" -> "Temperature [degC]"
-            - "Step ID", "Step" -> "Step from cycler"
-            - "Cycle ID", "Cycle" -> "Cycle from cycler"
-            - "Status" -> "Status"
-            - "DateTime", "Absolute Time", "Date(h:min:s.ms)" -> "Timestamp"
-
-        Additional column mappings can be provided via the extra_column_mappings parameter.
+        """Read and process data from a Neware file (CSV or Excel).
 
         Parameters
         ----------
@@ -451,7 +466,17 @@ class Neware(BaseReader):
         extra_column_mappings : dict[str, str] | None, optional
             Dictionary of additional column mappings to use when reading the Neware file.
             The keys are the original column names and the values are the new column
-            names. Default is None.
+            names; they take priority over the defaults. Default is None. The default
+            mappings are:
+
+            - "Current (mA)", "Cur(mA)" -> "Current [mA]"
+            - "Current (A)", "Current(A)" -> "Current [A]"
+            - "Voltage (V)", "Voltage(V)" -> "Voltage [V]"
+            - "Temperature 1 (degC)" -> "Temperature [degC]"
+            - "Step ID", "Step", "Step Index" -> "Step from cycler"
+            - "Cycle ID", "Cycle", "Cycle Index" -> "Cycle from cycler"
+            - "Status" -> "Status"
+            - "DateTime", "Absolute Time", "Date(h:min:s.ms)", "Date" -> "Timestamp"
         options : dict[str, str] | None, optional
             Dictionary of options to use when reading the Neware file. Supported options:
 
@@ -473,13 +498,6 @@ class Neware(BaseReader):
         pandas.DataFrame
             Processed data from the Neware file with standardized column names and units.
             If multiple sheets are read, a 'Sheet' column is added to identify the source sheet.
-
-        Notes
-        -----
-        This function reads a Neware file (CSV or Excel), processes the data, and returns a DataFrame
-        with standardized column names and units. It also handles data cleaning tasks such
-        as removing NaNs and converting the datetime to seconds from start.
-        For Excel files, you can specify which sheets to read using 'sheets' in options.
         """
         opts: dict[str, Any] = iwutil.check_and_combine_options(
             self.default_options, options

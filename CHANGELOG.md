@@ -9,6 +9,28 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [0.20.0] - 2026-09-30
+
+### Added
+- `DataLoader.generate_experiment(split_cc_cv=...)`. A step the cycler logged as
+  one CC-CV charge (constant current, then a voltage hold) is emitted as a
+  constant-current step followed by a constant-voltage step instead of a current
+  interpolant. On by default; pass `split_cc_cv=False` for the previous output.
+- `DataLoader.experiment_step_sources`: for each cycle of the last generated
+  experiment, the steps-table row (`"Start index"`) behind each experiment step.
+  A split row appears twice.
+
+### Changed
+- Because `split_cc_cv` defaults to `True`, an experiment generated from data
+  with CC-CV charges now has more steps than the steps table has rows. Code that
+  reads the experiment's steps by steps-table position should map through
+  `experiment_step_sources`.
+
+### Fixed
+- The Neware reader maps the BTSDA flat-CSV columns `"Cycle Index"`,
+  `"Step Index"` and `"Date"`, and reads capacity, energy and power columns as
+  floats even when a long opening rest writes them as `0`.
+
 ## [0.19.0] - 2026-09-29
 
 ### Breaking changes
