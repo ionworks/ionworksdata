@@ -80,9 +80,9 @@ from ._utils import (
     _UNIT_SUFFIX_RE,
     find_data_sheet,
     list_sheet_names,
+    read_excel,
     read_excel_and_get_column_names,
     strip_unit_suffix,
-    suppress_excel_dtype_warnings,
 )
 from .read import BaseReader
 
@@ -502,9 +502,7 @@ class Arbin(BaseReader):
         ext = Path(filename).suffix.lower()
         if ext in (".xls", ".xlsx"):
             sheet_name = find_arbin_data_sheet(filename)
-            with suppress_excel_dtype_warnings():
-                df = pl.read_excel(filename, sheet_name=sheet_name)
-            return df
+            return read_excel(filename, sheet_name=sheet_name)
         if ext == ".res":
             return _read_res_channel_table(filename)
         return pl.read_csv(
@@ -758,8 +756,7 @@ class Arbin(BaseReader):
         if sheet is None:
             return {}
         try:
-            with suppress_excel_dtype_warnings():
-                grid = pl.read_excel(filename, sheet_name=sheet, has_header=False)
+            grid = read_excel(filename, sheet_name=sheet, has_header=False)
         except Exception:
             # Listing the sheets can succeed on a workbook whose contents then
             # fail to parse; descriptive metadata is not worth raising over.
@@ -1101,8 +1098,7 @@ class ArbinEIS(Arbin):
                 f"No EIS sheet found in {filename}. Arbin writes impedance data "
                 "to a sheet named 'ACIM_*'; this workbook has none."
             )
-        with suppress_excel_dtype_warnings():
-            return pl.read_excel(filename, sheet_name=sheet_name)
+        return read_excel(filename, sheet_name=sheet_name)
 
     def run(
         self,
@@ -1276,8 +1272,7 @@ def _interleave_arbin_eis(
     if sheet_name is None:
         return data
 
-    with suppress_excel_dtype_warnings():
-        raw = pl.read_excel(filename, sheet_name=sheet_name)
+    raw = read_excel(filename, sheet_name=sheet_name)
     eis = _standardize_arbin_eis(raw)
     if eis.height == 0 or _EIS_TEST_TIME_COL not in eis.columns:
         return data

@@ -426,6 +426,50 @@ class DataLoader:
         self._start_idx = start_idx
         self._end_idx = end_idx
 
+    def _step_window(self):
+        """The rows the chosen steps select, or None when they select them all.
+
+        Returned as absolute offsets, for pushing down into the fetch so a
+        one-cycle window of a long history costs its own rows rather than the
+        whole trace.
+
+        Returns
+        -------
+        tuple[int, int] or None
+            Half-open row window, or None when every row is wanted.
+        """
+        original = getattr(self, "_original_steps_pl", None)
+        if self._steps_pl is None or original is None or original.height == 0:
+            return None
+        if getattr(self, "_force_full_fetch", False):
+            return None
+        if (self._start_idx, self._end_idx) == (0, int(original["End index"][-1]) + 1):
+            return None
+        return self._start_idx, self._end_idx
+
+    def _rebase_to_window(self, offset):
+        """Renumber row offsets so they address the fetched window.
+
+        Only the rows the chosen steps select were fetched, so offsets counted
+        from the start of the measurement would index past the end of what the
+        loader holds. Rebasing them here is what leaves every reader of
+        ``Start index`` / ``End index`` — and every later slice — unchanged.
+
+        ``_original_steps_pl`` keeps the measurement's own offsets: it describes
+        every step, including the ones whose rows were never fetched, so there
+        is no frame here for them to be relative to.
+
+        Parameters
+        ----------
+        offset : int
+            Absolute row the fetched frame starts at.
+        """
+        self._start_idx -= offset
+        self._end_idx -= offset
+        self._steps_pl = self._steps_pl.with_columns(
+            pl.col("Start index") - offset, pl.col("End index") - offset
+        )
+
     def _ensure_time_series_loaded(self):
         """Fetch and initialise time series from the DB. Ensures steps are loaded first for slicing."""
         if not getattr(self, "_lazy_time_series_pending", False):
@@ -439,11 +483,17 @@ class DataLoader:
         from ionworks import Ionworks
 
         client = getattr(self, "_lazy_client", None) or Ionworks()
+        window = self._step_window()
         time_series = client.cell_measurement.time_series(
-            measurement_id, use_cache=use_cache
+            measurement_id, use_cache=use_cache, row_range=window
         )
 
+        # The window itself, not its offset: a window can legitimately start at
+        # row 0 and still hold only part of the series.
+        self._fetched_window = window
         time_series_pl = self._to_polars(time_series)
+        if window is not None:
+            self._rebase_to_window(window[0])
 
         self._original_time_series_pl = time_series_pl
         if self._steps_pl is None:
@@ -1208,6 +1258,14 @@ class DataLoader:
         Returns ``self`` for chaining, e.g.
         ``loader.to_local().to_config()``.
         """
+        # Before any fetch: a loader that has already windowed one needs it
+        # redone, and one that has not must not window it in the first place.
+        self._force_full_fetch = True
+        window = getattr(self, "_fetched_window", None)
+        if window is not None:
+            # Not re-resolved: a slice_to_steps child has no first_step to resolve.
+            self._rebase_to_window(-window[0])
+            self._lazy_time_series_pending = True
         self._ensure_steps_loaded()
         self._ensure_time_series_loaded()
         self._measurement_id = None

@@ -108,11 +108,13 @@ class BaseReader:
 
     @staticmethod
     def _coerce_numeric(df: pl.DataFrame, col: str) -> pl.DataFrame:
-        """
-        Coerce a column to Float64, handling both string and numeric types.
+        """Coerce a column to Float64, warning about any text it has to discard.
 
-        For string columns, removes thousand separators (commas) before parsing.
-        For numeric columns, simply casts to Float64.
+        Text cells that do not parse (``"N/A"``, a unit, a repeated header row) become
+        null, leaving a gap in the series (or a dropped row, for readers that coerce
+        before the null-row filter), so this warning is the only trace of the loss
+        that reaches the user. Blank cells and thousand separators are expected and
+        do not warn.
 
         Parameters
         ----------
@@ -131,9 +133,25 @@ class BaseReader:
         dtype = df.schema[col]
         if dtype == pl.Utf8:
             # String column - remove thousand separators and parse
-            return df.with_columns(
-                pl.col(col).str.replace_all(",", "").cast(pl.Float64, strict=False)
-            )
+            raw = df[col]
+            parsed = raw.str.replace_all(",", "").cast(pl.Float64, strict=False)
+            # Null counts are metadata, so a clean column skips the scan below.
+            if parsed.null_count() == raw.null_count():
+                return df.with_columns(parsed.alias(col))
+            failed = raw.filter(parsed.is_null() & raw.is_not_null())
+            lost = failed.filter(failed.str.strip_chars() != "")
+            if lost.len():
+                examples = ", ".join(
+                    repr(v) for v in lost.head(1000).unique(maintain_order=True)[:3]
+                )
+                warnings.warn(
+                    f"{lost.len()} value(s) in '{col}' could not be read as numbers "
+                    f"and were replaced by null (e.g. {examples}). Check the source "
+                    "file for text, units or repeated header rows in this column.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return df.with_columns(parsed.alias(col))
         elif dtype != pl.Float64:
             # Numeric column (Int, UInt, Float32) - cast to Float64
             return df.with_columns(pl.col(col).cast(pl.Float64, strict=False))

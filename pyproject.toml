@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ionworksdata"
-version = "0.20.0"
+version = "0.20.1"
 description = "Data processing for Ionworks software."
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -20,7 +20,7 @@ dependencies = [
     "fastexcel>=0.20.2",
     "ionworks-api>=0.34.0",
     "ionworks-schema>=0.18.0",
-    "pytz>=2024.1",
+    "pytz>=2026.4",
 ]
 
 [project.optional-dependencies]

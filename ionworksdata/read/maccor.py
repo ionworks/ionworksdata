@@ -22,8 +22,8 @@ from ._metadata import (
 from ._utils import (
     find_data_sheet,
     is_maccor_text_extension,
+    read_excel,
     read_excel_and_get_column_names,
-    suppress_excel_dtype_warnings,
 )
 from .read import BaseReader
 
@@ -1518,11 +1518,9 @@ class Maccor(BaseReader):
         pl.DataFrame
             Raw data from Excel file with header row identified.
         """
-        # Suppress pandas dtype warning when reading Excel (printed to stderr)
-        with suppress_excel_dtype_warnings():
-            data, _ = read_excel_and_get_column_names(
-                filename, sheet_name=self._find_data_sheet(filename)
-            )
+        data, _ = read_excel_and_get_column_names(
+            filename, sheet_name=self._find_data_sheet(filename)
+        )
 
         return data
 
@@ -1536,11 +1534,7 @@ class Maccor(BaseReader):
         encoding, skiprows, _, _, _, is_excel = self._get_file_args(filename, options)
 
         if is_excel:
-            # Suppress pandas dtype warning when reading Excel (printed to stderr)
-            with suppress_excel_dtype_warnings():
-                df_raw = pl.read_excel(
-                    filename, sheet_name=self._find_data_sheet(filename)
-                )
+            df_raw = read_excel(filename, sheet_name=self._find_data_sheet(filename))
 
             # Return header row as string (column names are the header)
             return "\t".join(str(col) for col in df_raw.columns)

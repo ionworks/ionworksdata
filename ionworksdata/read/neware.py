@@ -18,7 +18,12 @@ from ._metadata import (
     parse_datetime,
     take_known_start_time,
 )
-from ._utils import find_data_sheet, iter_sheet_headers, list_sheet_names
+from ._utils import (
+    find_data_sheet,
+    iter_sheet_headers,
+    list_sheet_names,
+    read_excel,
+)
 from .read import BaseReader
 
 # A Neware time-series sheet exposes a voltage and a current column; the
@@ -233,7 +238,7 @@ class Neware(BaseReader):
                     trusted_name=self._btsda_record_sheet,
                     aliases=_NEWARE_HEADER_ALIASES,
                 )
-                df_pl = pl.read_excel(filename, sheet_name=record_sheet)
+                df_pl = read_excel(filename, sheet_name=record_sheet)
                 # Cast raw numeric columns to Float64 to handle type inference issues
                 df_pl = self._coerce_numeric_columns(
                     df_pl, columns=self._raw_numeric_columns
@@ -250,7 +255,7 @@ class Neware(BaseReader):
             # Read and combine data from selected sheets using Polars
             dataframes_pl = []
             for sheet in sheets_to_read:
-                df_pl = pl.read_excel(filename, sheet_name=sheet)
+                df_pl = read_excel(filename, sheet_name=sheet)
                 # Cast raw numeric columns to Float64 to handle type inference issues
                 df_pl = self._coerce_numeric_columns(
                     df_pl, columns=self._raw_numeric_columns
@@ -638,7 +643,7 @@ class Neware(BaseReader):
         if sheet is None:
             return {}
         try:
-            grid = pl.read_excel(filename, sheet_name=sheet, has_header=False)
+            grid = read_excel(filename, sheet_name=sheet, has_header=False)
         except Exception:
             # Listing the sheets can succeed on a workbook whose contents then
             # fail to parse; descriptive metadata is not worth raising over.

@@ -4,49 +4,67 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 import re
-import sys
+import threading
+from typing import Any
 
 import fastexcel
 import polars as pl
 
+# Logger filters see only records created on their own logger, not a child's,
+# so this must be the exact emitting logger rather than ``fastexcel``.
+_FASTEXCEL_DTYPE_LOGGER = "fastexcel.types.dtype"
 
-class _FilterStderr:
-    """Filter stderr to suppress pandas dtype warnings while allowing other output."""
+
+class _EmptyColumnDtypeFilter(logging.Filter):
+    """Drop fastexcel's "falling back to string" record from one thread only.
+
+    The logger is process-wide, so without the thread check a read on another
+    thread (the backend parses uploads in worker threads) would lose its record
+    for as long as this one holds the filter.
+    """
 
     def __init__(self):
-        self.stderr = sys.stderr
+        super().__init__()
+        self.thread_id = threading.get_ident()
 
-    def write(self, text):
-        # Filter out dtype warnings
-        if (
-            "Could not determine dtype for column" in text
-            and "falling back to string" in text
-        ):
-            return
-        # Pass through other output
-        self.stderr.write(text)
-
-    def flush(self):
-        self.stderr.flush()
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.thread == self.thread_id
+            and "falling back to string" in record.getMessage()
+        )
 
 
 @contextmanager
-def suppress_excel_dtype_warnings():
-    """
-    Context manager to suppress pandas dtype warnings when reading Excel files.
+def suppress_excel_dtype_warnings() -> Iterator[None]:
+    """Silence fastexcel's empty-column dtype warning while reading a workbook.
 
-    Suppresses warnings of the form "Could not determine dtype for column X,
-    falling back to string" while allowing other stderr output to pass through.
+    fastexcel logs "Could not determine dtype for column N, falling back to string"
+    when a column has a header but no values in its sampled rows. The column is
+    still read, as all-null strings, so the record is noise to anyone reading
+    cycler data. It is filtered on the logger rather than on ``sys.stderr``,
+    because a handler configured with ``logging.basicConfig()`` holds its own
+    reference to the stream and bypasses any stderr swap.
     """
-    stderr_filter = _FilterStderr()
-    original_stderr = sys.stderr
+    target = logging.getLogger(_FASTEXCEL_DTYPE_LOGGER)
+    dtype_filter = _EmptyColumnDtypeFilter()
+    target.addFilter(dtype_filter)
     try:
-        sys.stderr = stderr_filter
         yield
     finally:
-        sys.stderr = original_stderr
+        target.removeFilter(dtype_filter)
+
+
+def read_excel(*args: Any, **kwargs: Any) -> pl.DataFrame:
+    """Call :func:`polars.read_excel` with fastexcel's empty-column warning silenced.
+
+    Readers go through this rather than ``pl.read_excel`` so that a new call site
+    cannot bring the warning back. Arguments are passed through unchanged.
+    """
+    with suppress_excel_dtype_warnings():
+        return pl.read_excel(*args, **kwargs)
 
 
 def is_maccor_text_extension(ext: str) -> bool:
@@ -74,12 +92,11 @@ def read_excel_and_get_column_names(
     tuple[pl.DataFrame, list[str]]
         DataFrame and lowercase column names
     """
-    with suppress_excel_dtype_warnings():
-        df = pl.read_excel(
-            filename, read_options={"header_row": header_row}, sheet_name=sheet_name
-        )
+    df = read_excel(
+        filename, read_options={"header_row": header_row}, sheet_name=sheet_name
+    )
     if "date of test:" in [str(col).lower() for col in df.columns]:
-        df = pl.read_excel(
+        df = read_excel(
             filename, read_options={"header_row": header_row + 1}, sheet_name=sheet_name
         )
     return df, [] if df is None else [str(col).lower() for col in df.columns]
@@ -129,10 +146,7 @@ def _probe_headers(filename: str | Path, sheet_name: str) -> list[str] | None:
         Raw header strings, or None when the sheet fails to parse.
     """
     try:
-        with suppress_excel_dtype_warnings():
-            head = pl.read_excel(
-                filename, sheet_name=sheet_name, read_options={"n_rows": 1}
-            )
+        head = read_excel(filename, sheet_name=sheet_name, read_options={"n_rows": 1})
     except Exception:
         return None
     return None if head is None else [str(c) for c in head.columns]

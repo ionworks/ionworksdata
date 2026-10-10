@@ -9,6 +9,19 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [0.20.1] - 2026-10-09
+
+### Changed
+- `DataLoader.from_db` with `first_step` / `last_step` downloads only the rows
+  those steps cover, instead of the whole time series.
+
+### Fixed
+- Excel readers no longer print fastexcel's "Could not determine dtype for
+  column" warning when the caller has configured `logging`.
+- Text in a numeric column that cannot be parsed as a number (e.g. `"N/A"`, or
+  a repeated header row) now emits a `UserWarning` naming the column, the count
+  and example values, instead of silently becoming null.
+
 ## [0.20.0] - 2026-09-30
 
 ### Added
