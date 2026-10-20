@@ -9,6 +9,22 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [0.20.2] - 2026-10-20
+
+### Added
+- `ionworksdata.cycle_metrics.INPUT_COLUMNS`: the steps-table columns
+  `get_cycle_metrics` reads, for reading a steps table selectively.
+
+### Changed
+- Requires `pandas>=2.2.2`. Earlier pandas releases do not import alongside
+  numpy 2.
+
+### Fixed
+- Step classification leaves out a step's last sample when measuring its spread,
+  as it already did the first. A constant-current step whose last logged sample
+  belongs to the next step now classifies as constant current instead of
+  `Unknown`.
+
 ## [0.20.1] - 2026-10-09
 
 ### Changed

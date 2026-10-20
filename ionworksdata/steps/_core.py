@@ -139,21 +139,15 @@ def _add_step_groups(time_series_pl: pl.DataFrame) -> pl.DataFrame:
 
 
 def _trimmed_std(col: str, alias: str) -> pl.Expr:
-    """Per-step standard deviation that excludes the leading boundary sample.
+    """Per-step standard deviation without the first and last samples.
 
-    The first sample of a step can carry the *previous* step's setpoint (a
-    segmentation transition point) before the channel settles on the new value.
-    This does not happen for every step, but when it does that single outlier
-    can inflate the spread enough to push a genuine constant-current/voltage/
-    power step past its tolerance and mislabel it as ``"Unknown step type"``.
-    Dropping the leading sample removes the artefact when present and is
-    effectively harmless otherwise: a genuinely constant step's spread is
-    unchanged by omitting one of its (near-)identical samples. The trim is
-    applied only to the spread metrics, not to ``Mean``/``Min``/``Max``, which
-    must continue to reflect every recorded sample (the mean, in particular, is
-    consumed downstream as a setpoint). Steps with two or fewer samples keep the
-    full standard deviation, since trimming would leave too few points to
-    estimate spread.
+    A step's first sample can carry the previous step's setpoint, and some
+    cyclers log the next step's first sample as the step's last. Either outlier
+    can push a constant step's spread past its tolerance and leave it
+    ``"Unknown step type"``; a genuinely constant step loses nothing by dropping
+    them. ``Mean``/``Min``/``Max`` stay untrimmed, since the mean is consumed
+    downstream as a setpoint. Three-sample steps drop only the first sample, so
+    two remain; shorter steps keep the full standard deviation.
 
     Parameters
     ----------
@@ -168,13 +162,10 @@ def _trimmed_std(col: str, alias: str) -> pl.Expr:
         Aggregation expression yielding the trimmed standard deviation, with
         nulls filled to ``0.0``.
     """
-    return (
-        pl.when(pl.col(col).len() > 2)
-        .then(pl.col(col).slice(1).std())
-        .otherwise(pl.col(col).std())
-        .fill_null(0.0)
-        .alias(alias)
-    )
+    n = pl.col(col).len()
+    head = (n > 2).cast(pl.UInt32)
+    tail = (n > 3).cast(pl.UInt32)
+    return pl.col(col).slice(head, n - head - tail).std().fill_null(0.0).alias(alias)
 
 
 def _build_agg_exprs(

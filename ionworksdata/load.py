@@ -1775,17 +1775,16 @@ class DataLoader:
         hold = voltage.max() if charge else voltage.min()
         voltage_tol = iw_settings.get_voltage_std_tol()
         k = int(np.argmax(np.abs(voltage - hold) < voltage_tol))
-        # One sample is trimmed from the CC leg, as in step classification, and
-        # each leg keeps at least two.
-        if k < 3 or k > len(time) - 2:
+        # Boundary samples are trimmed as in step classification; each leg keeps two.
+        if k < 3 or k > len(time) - 3:
             return None
         cc_current = current[1:k]
-        tapered = abs(current[-1]) < abs(cc_current.mean()) - (
+        tapered = abs(current[-2]) < abs(cc_current.mean()) - (
             iw_settings.get_current_std_tol()
         )
         if not (
             cc_current.std() < iw_settings.get_current_std_tol()
-            and voltage[k:].std() < voltage_tol
+            and voltage[k:-1].std() < voltage_tol
             and tapered
         ):
             return None
@@ -1793,7 +1792,7 @@ class DataLoader:
         first = int(step_row["Start index"])
         # The cycler switched to the hold on reaching it, so the CC leg ends at
         # the hold voltage rather than at its last logged sample.
-        hold_voltage = float(voltage[k:].mean())
+        hold_voltage = float(voltage[k:-1].mean())
         # Capacity, energy and mean power still describe the whole step: nothing
         # reads them for a CC or CV step, so they are not recomputed per leg.
         cc_leg = {
@@ -1812,7 +1811,7 @@ class DataLoader:
             "Start index": first + k,
             "Start time [s]": float(time[k]),
             "Duration [s]": float(time[-1] - time[k]),
-            "Mean current [A]": float(current[k:].mean()),
+            "Mean current [A]": float(current[k:-1].mean()),
             "Mean voltage [V]": hold_voltage,
             "Start voltage [V]": float(voltage[k]),
         }

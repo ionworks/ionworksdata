@@ -4,6 +4,26 @@ import polars as pl
 
 import ionworksdata as iwdata
 
+#: Every step column :func:`get_cycle_metrics` reads, for callers reading a step table
+#: selectively. ``test_cycle_metrics`` fails when the metrics read one not listed.
+INPUT_COLUMNS = frozenset(
+    {
+        "Cycle count",
+        "Discharge capacity [A.h]",
+        "Charge capacity [A.h]",
+        "Discharge capacity [mA.h.cm-2]",
+        "Charge capacity [mA.h.cm-2]",
+        "Discharge energy [W.h]",
+        "Charge energy [W.h]",
+        "Mean current [A]",
+        "Duration [s]",
+        "Min voltage [V]",
+        "Max voltage [V]",
+        "Mean temperature [degC]",
+        "Start time [s]",
+    }
+)
+
 
 def get_cycle_metrics(
     steps: pl.DataFrame,
