@@ -16,6 +16,7 @@ import ionworksdata as iwdata
 from ionworksdata.logger import logger
 from ionworksdata.read._metadata import take_known_start_time
 from ionworksdata.read.detect import detect_reader
+from ionworksdata.transform import CYCLE_CUMULATIVE_COLUMNS
 
 
 def _validate_argument_order(
@@ -401,6 +402,10 @@ def time_series(
         - "Charge capacity [A.h]" : Charge capacity in ampere-hours
         - "Discharge energy [W.h]" : Discharge energy in watt-hours
         - "Charge energy [W.h]" : Charge energy in watt-hours
+        - "Cycle discharge capacity [A.h]" : Discharge capacity accumulated per cycle
+        - "Cycle charge capacity [A.h]" : Charge capacity accumulated per cycle
+        - "Cycle discharge energy [W.h]" : Discharge energy accumulated per cycle
+        - "Cycle charge energy [W.h]" : Charge energy accumulated per cycle
         - "Power [W]" : Power in watts (Voltage [V] * Current [A])
         Additional columns may be present if specified in extra_column_mappings or
         extra_constant_columns.
@@ -450,6 +455,8 @@ def time_series(
     # Add capacity and energy columns
     data = iwdata.transform.set_capacity(data, options=options)
     data = iwdata.transform.set_energy(data, options=options)
+    data = iwdata.transform.set_cycle_cumulative_capacity(data, options=options)
+    data = iwdata.transform.set_cycle_cumulative_energy(data)
     data = iwdata.transform.set_power(data)
     data = iwdata.transform.clear_time_domain_columns_on_eis_rows(data)
 
@@ -572,6 +579,7 @@ def time_series_and_steps(
                         "Charge capacity [A.h]",
                         "Discharge energy [W.h]",
                         "Charge energy [W.h]",
+                        *CYCLE_CUMULATIVE_COLUMNS,
                     )
                     if c in data.columns
                 ]
@@ -583,6 +591,10 @@ def time_series_and_steps(
                 # column over Voltage*Current) uses the corrected sign too.
                 data = iwdata.transform.set_capacity(data, options=reader_options)
                 data = iwdata.transform.set_energy(data, options=reader_options)
+                data = iwdata.transform.set_cycle_cumulative_capacity(
+                    data, options=reader_options
+                )
+                data = iwdata.transform.set_cycle_cumulative_energy(data)
                 # No-op if "Power [W]" already exists (native and re-signed above);
                 # otherwise derives it fresh from the now-corrected current.
                 data = iwdata.transform.set_power(data)

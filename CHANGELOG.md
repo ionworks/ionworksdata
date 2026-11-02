@@ -9,6 +9,18 @@ see [docs.ionworks.com/changelog](https://docs.ionworks.com/changelog).
 
 <!-- New release sections are prepended below by the release-packages skill. -->
 
+## [0.21.0] - 2026-11-02
+
+### Added
+- `read.maccor_procedure` extracts the test procedure embedded in a Maccor raw data file, as a `MaccorProcedure` that reports which parts are missing (#2568)
+- Reading a file adds cycle-cumulative charge/discharge capacity and energy columns, which reset each cycle; `transform.set_cycle_cumulative_capacity` and `set_cycle_cumulative_energy` compute them (#2231)
+
+### Changed
+- Requires `polars>=2.1.0`, up from `polars>=1.44.2` (#2657)
+
+### Fixed
+- With `termination="events"`, a CC or CP step whose last sample belongs to the next step now ends at its own cut-off, not early (#2466)
+
 ## [0.20.2] - 2026-10-20
 
 ### Added

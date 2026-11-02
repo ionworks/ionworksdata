@@ -344,24 +344,42 @@ def _spec_capacity(cell_spec: Any) -> float | None:
     return value * _AH_PER_UNIT[unit]
 
 
-def _infer_step_type_expr(scale: float | None, capacity: float | None) -> pl.Expr:
-    """Build a ``pl.Expr`` that classifies each step's type.
+def _current_tolerances(
+    scale: float | None, capacity: float | None
+) -> tuple[float, float]:
+    """The rest and CC-std current tolerances [A] steps are classified by.
 
-    The absolute rest and CC-std tolerances (1 mA, 10 mA) exceed every current
-    in coin-cell data, so each is capped at C/1000 and C/200 of ``capacity``
-    [A.h], or else at 1 % of ``scale``, the largest absolute current in the data.
+    The absolute settings (1 mA, 10 mA) exceed every current in coin-cell data,
+    so each is capped at C/1000 and C/200 of ``capacity`` [A.h], or else at 1 %
+    of ``scale``, the largest absolute current in the data.
+
+    Parameters
+    ----------
+    scale : float or None
+        Largest absolute current in the data [A].
+    capacity : float or None
+        Rated cell capacity [A.h].
+
+    Returns
+    -------
+    tuple of (float, float)
+        The rest tolerance and the current standard-deviation tolerance.
     """
+    rest_tol = iwdata.settings.get_rest_tol()
     current_tol = iwdata.settings.get_current_std_tol()
+    if capacity:
+        return min(rest_tol, capacity / 1000), min(current_tol, capacity / 200)
+    if scale:
+        return min(rest_tol, scale / 100), min(current_tol, scale / 100)
+    return rest_tol, current_tol
+
+
+def _infer_step_type_expr(scale: float | None, capacity: float | None) -> pl.Expr:
+    """Build a ``pl.Expr`` that classifies each step's type."""
+    rest_tol, current_tol = _current_tolerances(scale, capacity)
     voltage_tol = iwdata.settings.get_voltage_std_tol()
     power_tol = iwdata.settings.get_power_std_tol()
-    rest_tol = iwdata.settings.get_rest_tol()
     eis_tol = iwdata.settings.get_eis_tol()
-    if capacity:
-        rest_tol = min(rest_tol, capacity / 1000)
-        current_tol = min(current_tol, capacity / 200)
-    elif scale:
-        rest_tol = min(rest_tol, scale / 100)
-        current_tol = min(current_tol, scale / 100)
     return (
         pl.when(pl.col("Mean frequency [Hz]") > eis_tol)
         .then(pl.lit("EIS"))

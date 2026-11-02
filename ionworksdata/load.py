@@ -14,6 +14,7 @@ from scipy.signal import find_peaks, savgol_filter
 
 from . import settings as iw_settings, steps as iw_steps, transform as iw_transform
 from .logger import _import_pybamm, logger
+from .steps._core import _current_tolerances
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -1538,6 +1539,24 @@ class DataLoader:
         cycle_key = None
         unclassified: list[str] = []
         step_rows = steps_pl.iter_rows(named=True)
+        if termination == "events":
+            # From the steps table, so a lazy series is fetched only if needed.
+            scale = (
+                steps_pl.select(
+                    pl.lit(None, pl.Float64),
+                    pl.col(r"^(Min|Max) current \[A\]$").abs().max(),
+                )
+                .max_horizontal()
+                .item()
+            )
+            _, current_tol = _current_tolerances(scale, None)
+            # Before the split: a split's CC leg ends inside its step, at the hold.
+            step_rows = (
+                self._without_next_steps_sample(row, current_tol)
+                if row["Step type"] in _VOLTAGE_EVENT_STEPS
+                else row
+                for row in step_rows
+            )
         if split_cc_cv:
             step_rows = self._with_cc_cv_split(step_rows)
         else:
@@ -1666,6 +1685,11 @@ class DataLoader:
             plt.show()
         return fig, ax
 
+    def _get_step_voltages(self, step, length: int) -> np.ndarray:
+        """The first ``length`` voltage samples of ``step``."""
+        start_idx = int(step["Start index"]) - self._start_idx
+        return self.data["Voltage [V]"].slice(start_idx, length).to_numpy()
+
     def _get_times_and_currents(self, step):
         # Use the data property so lazily-loaded (from_db) time series is fetched
         data = self.data
@@ -1767,8 +1791,7 @@ class DataLoader:
         if "Voltage [V]" not in self.data.columns:
             return None
         time, current = self._get_times_and_currents(step_row)
-        start_idx = int(step_row["Start index"]) - self._start_idx
-        voltage = self.data["Voltage [V]"].slice(start_idx, len(time)).to_numpy()
+        voltage = self._get_step_voltages(step_row, len(time))
         if len(time) < 4 or abs(current.mean()) < iw_settings.get_rest_tol():
             return None
         charge = current.mean() < 0
@@ -1817,6 +1840,55 @@ class DataLoader:
         }
         return [cc_leg, cv_leg]
 
+    def _without_next_steps_sample(self, step_row: dict, current_tol: float) -> dict:
+        """A constant-current or -power step without a last sample it does not own.
+
+        Some cyclers log the next step's first sample as a step's last. Its
+        voltage has already jumped by the next step's IR drop, so as the endpoint
+        it would end a discharge followed by a charge early. The summary fields
+        describe every logged sample, so the endpoint and setpoint are re-read
+        from the series without it.
+
+        Parameters
+        ----------
+        step_row : dict
+            One row of the steps table, as produced by
+            :func:`ionworksdata.steps.summarize`.
+        current_tol : float
+            How far [A] a constant-current step's last sample may sit from its
+            setpoint and still be its own.
+
+        Returns
+        -------
+        dict
+            The row itself, or a copy whose ``"End voltage [V]"`` and mean
+            setpoint omit a last sample off the step's setpoint.
+        """
+        power = step_row["Step type"].startswith("Constant power")
+        quantity = "power [W]" if power else "current [A]"
+        tol = iw_settings.get_power_std_tol() if power else current_tol
+        low, high = (step_row.get(f"{end} {quantity}") for end in ("Min", "Max"))
+        # No sample is that far from any other, so none can be the next step's.
+        if low is not None and high is not None and high - low < tol:
+            return step_row
+        if "Voltage [V]" not in self.data.columns:
+            return step_row
+        _, current = self._get_times_and_currents(step_row)
+        if len(current) < 3:
+            return step_row
+        voltage = self._get_step_voltages(step_row, len(current))
+        setpoint = current * voltage if power else current
+        column = f"Mean {quantity}"
+        # The first sample can carry the previous step's setpoint, so it is
+        # left out of the reference the last sample is compared against.
+        if abs(setpoint[-1] - setpoint[1:-1].mean()) < tol:
+            return step_row
+        return {
+            **step_row,
+            "End voltage [V]": float(voltage[-2]),
+            column: float(setpoint[:-1].mean()),
+        }
+
     def _step_event(self, step_row: dict, use_cv: bool) -> str | None:
         """Where a step ended, in the variable it was controlling.
 
@@ -1862,7 +1934,15 @@ class DataLoader:
         _, current = self._get_times_and_currents(step_row)
         if not len(current):
             return None
-        reached = round(abs(float(current[-1])), _CURRENT_EVENT_DP)
+        end = current[-1]
+        if len(current) >= 3 and "Voltage [V]" in self.data.columns:
+            voltage = self._get_step_voltages(step_row, len(current))
+            # A last sample off the hold voltage is the next step's.
+            if abs(voltage[-1] - voltage[1:-1].mean()) >= (
+                iw_settings.get_voltage_std_tol()
+            ):
+                end = current[-2]
+        reached = round(abs(float(end)), _CURRENT_EVENT_DP)
         if not reached:
             return None
         return f"{reached} A"

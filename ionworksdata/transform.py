@@ -545,12 +545,22 @@ def _calculate_capacity(
     return discharge_capacity, charge_capacity
 
 
+#: Written by :func:`set_cycle_cumulative_capacity` and
+#: :func:`set_cycle_cumulative_energy`.
+CYCLE_CUMULATIVE_COLUMNS = (
+    "Cycle discharge capacity [A.h]",
+    "Cycle charge capacity [A.h]",
+    "Cycle discharge energy [W.h]",
+    "Cycle charge energy [W.h]",
+)
+
 # Time-domain quantities an EIS sweep does not measure.
 _EIS_ABSENT_COLUMNS = (
     "Discharge capacity [A.h]",
     "Charge capacity [A.h]",
     "Discharge energy [W.h]",
     "Charge energy [W.h]",
+    *CYCLE_CUMULATIVE_COLUMNS,
     "Power [W]",
 )
 
@@ -809,6 +819,125 @@ def set_energy(data: pl.DataFrame, options: dict | None = None) -> pl.DataFrame:
     if "Energy [W.h]" in result.columns:
         result = result.drop("Energy [W.h]")
     return result
+
+
+def get_cycle_cumulative(data: pl.DataFrame, column: str) -> pl.Series:
+    """Re-accumulate a per-step running quantity so it resets per cycle instead.
+
+    ``column`` restarts at every step boundary, as ``set_capacity`` and
+    ``set_energy`` produce it. Each row gains the final value of every earlier step
+    in its cycle, so the result runs through a cycle and restarts at its first step.
+    A step belongs to the cycle it starts in, as in ``steps.summarize``, so the last
+    value in a cycle equals the steps table's per-cycle total. Null and NaN rows stay
+    as they are and contribute nothing to later steps.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Time series with "Step count", "Cycle count" and ``column``.
+    column : str
+        The per-step running column to re-accumulate, e.g. "Discharge capacity [A.h]".
+
+    Returns
+    -------
+    pl.Series
+        The cycle-cumulative values, one per row of ``data``, named ``column``.
+
+    Raises
+    ------
+    ValueError
+        If "Step count", "Cycle count" or ``column`` is missing from ``data``.
+    """
+    missing = [c for c in ("Step count", "Cycle count", column) if c not in data]
+    if missing:
+        raise ValueError(f"Data must contain columns {missing} to accumulate by cycle")
+
+    # Contiguous runs, not ids: a repeated step id must not merge distant rows.
+    rows = data.select(
+        pl.col(column),
+        pl.col("Step count").rle_id().alias("_step"),
+        pl.col("Cycle count"),
+    )
+    step_ends = (
+        rows.group_by("_step", maintain_order=True)
+        .agg(
+            pl.col("Cycle count").first().alias("_cycle"),
+            pl.col(column)
+            .fill_nan(None)
+            .drop_nulls()
+            .last()
+            .fill_null(0.0)
+            .alias("_end"),
+        )
+        .with_columns(pl.col("_cycle").rle_id())
+        .with_columns(
+            (pl.col("_end").cum_sum().over("_cycle") - pl.col("_end")).alias("_offset")
+        )
+        .select("_step", "_offset")
+    )
+    return (
+        rows.join(step_ends, on="_step", how="left", maintain_order="left")
+        .select((pl.col(column) + pl.col("_offset")).alias(column))
+        .to_series()
+    )
+
+
+def set_cycle_cumulative_capacity(
+    data: pl.DataFrame, options: dict | None = None
+) -> pl.DataFrame:
+    """Add discharge and charge capacity accumulated from the start of each cycle.
+
+    Adds "Cycle discharge capacity [A.h]" and "Cycle charge capacity [A.h]" (or
+    ``[mA.h.cm-2]`` with density units). Unlike "Discharge capacity [A.h]", which
+    restarts at every step, these run across all steps of a cycle and restart at its
+    first step. They differ from ``steps.set_cycle_capacity``, which writes one
+    per-cycle total per step. See :func:`get_cycle_cumulative`.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Time series with "Step count", "Cycle count" and the per-step discharge and
+        charge capacity columns. Run :func:`set_capacity` first if they are absent.
+    options : dict, optional
+        Options selecting the capacity units. The default is None (``A.h``).
+
+    Returns
+    -------
+    pl.DataFrame
+        The data with the two cycle capacity columns added.
+    """
+    _, capacity_units = iwdata.util.get_current_and_capacity_units(options)
+    return data.with_columns(
+        get_cycle_cumulative(data, f"{kind} capacity [{capacity_units}]").alias(
+            f"Cycle {kind.lower()} capacity [{capacity_units}]"
+        )
+        for kind in ("Discharge", "Charge")
+    )
+
+
+def set_cycle_cumulative_energy(data: pl.DataFrame) -> pl.DataFrame:
+    """Add discharge and charge energy accumulated from the start of each cycle.
+
+    Adds "Cycle discharge energy [W.h]" and "Cycle charge energy [W.h]", the energy
+    counterparts of :func:`set_cycle_cumulative_capacity`.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Time series with "Step count", "Cycle count", "Discharge energy [W.h]" and
+        "Charge energy [W.h]". Run :func:`set_energy` first if they are absent.
+
+    Returns
+    -------
+    pl.DataFrame
+        The data with the two cycle energy columns added.
+    """
+    return data.with_columns(
+        get_cycle_cumulative(data, f"{kind} energy [W.h]").alias(
+            f"Cycle {kind.lower()} energy [W.h]"
+        )
+        for kind in ("Discharge", "Charge")
+    )
 
 
 def _calculate_net_capacity(

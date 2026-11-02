@@ -18,6 +18,7 @@ from .biologic import (
     biologic_csv,
 )
 from .maccor import Maccor, maccor
+from .maccor_procedure import MaccorProcedure, maccor_procedure
 from .neware import Neware, neware
 from .repower import Repower, repower
 from .novonix import Novonix, novonix

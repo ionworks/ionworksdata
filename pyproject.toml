@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ionworksdata"
-version = "0.20.2"
+version = "0.21.0"
 description = "Data processing for Ionworks software."
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -12,7 +12,7 @@ readme = { file = "README.md", content-type = "text/markdown" }
 dependencies = [
     "pybamm>=26.9.0.0",
     "iwutil>=0.4.0",
-    "polars>=1.44.2",
+    "polars>=2.1.0",
     "pandas>=2.2.2",
     # Not 2.5: it needs Python 3.12, and requires-python still allows 3.11.
     "numpy>=2.0.0",
