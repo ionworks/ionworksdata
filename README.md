@@ -1,3 +1,7 @@
+> **This package is deprecated and receives no further releases.** It is now part of [`ionworks`](https://pypi.org/project/ionworks/), with source at https://github.com/ionworks/ionworks. Install it with `pip install ionworks`, and see the [migration guide](https://packages.docs.ionworks.com/ionworks/migration.html) to update your code. Existing installs of this package keep working.
+
+Import it as `ionworks.data`.
+
 # Ionworks Data Processing
 
 > **This is a read-only mirror.** The source of truth is a private repo.

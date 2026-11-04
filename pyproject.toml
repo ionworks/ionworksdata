@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ionworksdata"
-version = "0.21.0"
+version = "0.22.0"
 description = "Data processing for Ionworks software."
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -39,10 +39,10 @@ docs = [
 [project.urls]
 Homepage = "https://ionworks.com"
 Documentation = "https://packages.docs.ionworks.com/ionworksdata/"
-Repository = "https://github.com/ionworks/ionworksdata"
+Repository = "https://github.com/ionworks/ionworks"
 
 [tool.hatch.build.targets.sdist]
-include = ["ionworksdata"]
+only-include = ["ionworksdata", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["ionworksdata"]
@@ -55,6 +55,7 @@ ionworks-schema = { workspace = true }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+filterwarnings = ["ignore:.*is deprecated and will receive no further releases:FutureWarning"]
 
 [tool.coverage.run]
 source = ["ionworksdata"]

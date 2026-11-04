@@ -1,3 +1,12 @@
+# ruff: noqa: E402
+import warnings
+
+warnings.warn(
+    "ionworksdata is deprecated and will receive no further releases. Its functionality now lives in the 'ionworks' package: https://packages.docs.ionworks.com/ionworks/migration.html",
+    FutureWarning,
+    stacklevel=2,
+)
+
 from . import steps, transform, util, read, cycle_metrics, write
 from .analysis import AnalysisLoader
 from .load import (
